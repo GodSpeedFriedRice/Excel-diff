@@ -28,6 +28,11 @@ internal sealed class WorkbookView : UserControl
         Dock = DockStyle.Fill, Height = 70, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Vertical, BackColor = Color.White, AccessibleName = "変更前後の詳細"
     };
+    private readonly TextBox fullDetails = new()
+    {
+        Dock = DockStyle.Fill, Height = 63, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical, BackColor = Color.White, AccessibleName = "全体プレビューで選択したセル"
+    };
     private readonly SheetPreview leftPreview = new();
     private readonly SheetPreview rightPreview = new();
     private readonly TableLayoutPanel listLayout = Appearance.Stack();
@@ -92,9 +97,24 @@ internal sealed class WorkbookView : UserControl
         listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
         list.Controls.Add(listLayout);
         xml.Controls.Add(Split(xmlLeft, xmlRight));
-        full.Controls.Add(Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)));
+        var fullLayout = Appearance.Stack();
+        var legend = Appearance.Toolbar();
+        foreach (var (caption, background) in new[]
+            { ("変更", Appearance.Changed), ("追加", Appearance.Added), ("削除", Appearance.Removed) })
+        {
+            var label = Appearance.Label(caption);
+            label.BackColor = background;
+            label.Padding = new Padding(5, 1, 5, 1);
+            legend.Controls.Add(label);
+        }
+        Appearance.Row(fullLayout, legend);
+        Appearance.Row(fullLayout, Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)), fill: true);
+        Appearance.Row(fullLayout, fullDetails);
+        full.Controls.Add(fullLayout);
         leftFull.Scrolled += rightFull.ScrollBy;
         rightFull.Scrolled += leftFull.ScrollBy;
+        leftFull.Picked += pick => SelectPreviewCell(pick, before: true);
+        rightFull.Picked += pick => SelectPreviewCell(pick, before: false);
         views.TabPages.AddRange([list, full, xml]);
         Appearance.Row(layout, views, fill: true);
         Controls.Add(layout);
@@ -231,7 +251,36 @@ internal sealed class WorkbookView : UserControl
         };
     }
 
-    private void UpdateSelection()
+    private static string DescribeDifference(Difference diff)
+    {
+        var heading = $"{diff.Item}　{DescribeLocation(diff)}";
+        return diff.Parts is { Count: > 0 } parts
+            ? heading + Environment.NewLine + string.Join(Environment.NewLine,
+                parts.Select(part => $"{part.Item}　{part.Left ?? "—"} → {part.Right ?? "—"}"))
+            : $"{heading}{Environment.NewLine}変更前　{diff.Left ?? "—"}{Environment.NewLine}変更後　{diff.Right ?? "—"}";
+    }
+
+    private void SelectPreviewCell(FullSheetPane.CellPick pick, bool before)
+    {
+        if (Current is not SheetDiff sheet) return;
+        if (pick.DifferenceIndices.Count > 0)
+        {
+            updating = true;
+            differences.CurrentCell = differences[0, pick.DifferenceIndices[0]];
+            updating = false;
+            UpdateSelection(jumpToDifference: false);
+            fullDetails.Text = string.Join(Environment.NewLine + Environment.NewLine,
+                pick.DifferenceIndices.Select(index => DescribeDifference(sheet.Differences[index])));
+            return;
+        }
+        (before ? rightFull : leftFull).ClearSelection();
+        var side = before ? "左" : "右";
+        var value = pick.Value.Length > 0 ? $"　{pick.Value}" : "";
+        var formula = pick.Formula is null ? "" : $"{Environment.NewLine}数式　={pick.Formula}";
+        fullDetails.Text = $"{side}　{pick.Address}{value}{formula}";
+    }
+
+    private void UpdateSelection(bool jumpToDifference = true)
     {
         var sheet = Current;
         if (views.SelectedTab == xml)
@@ -247,17 +296,18 @@ internal sealed class WorkbookView : UserControl
         var count = sheet?.Differences.Count ?? 0;
         var diff = index >= 0 && index < count ? sheet!.Differences[index] : null;
         position.Text = $"{(diff is null ? 0 : index + 1)} / {count}";
-        detail.Text = diff?.Parts is { Count: > 0 } parts
-            ? string.Join(Environment.NewLine, parts.Select(part => $"{part.Item}　{part.Left ?? "—"} → {part.Right ?? "—"}"))
-            : diff is not null ? $"{diff.Item}　{DescribeLocation(diff)}{Environment.NewLine}変更前　{diff.Left ?? "—"}{Environment.NewLine}変更後　{diff.Right ?? "—"}"
-            : sheet is null ? "比較できるシートがありません。" : "比較対象の項目に差分はありません。";
+        detail.Text = diff is not null ? DescribeDifference(diff) : sheet is null
+            ? "比較できるシートがありません。" : "比較対象の項目に差分はありません。";
 
         var column = diff?.Column ?? 1;
         var leftRow = diff?.LeftRow ?? diff?.RightRow ?? 1;
         var rightRow = diff?.RightRow ?? diff?.LeftRow ?? 1;
         if (views.SelectedTab == full)
         {
-            var jump = !ReferenceEquals(fullSheet, sheet) || !ReferenceEquals(fullDifference, diff);
+            var jump = jumpToDifference && (!ReferenceEquals(fullSheet, sheet) || !ReferenceEquals(fullDifference, diff));
+            fullDetails.Text = detail.Text;
+            leftFull.SetChanges(sheet?.Differences, before: true);
+            rightFull.SetChanges(sheet?.Differences, before: false);
             fullSheet = sheet;
             fullDifference = diff;
             var rowLayout = diff?.Kind == ChangeKind.RowLayout || diff?.Column is null && diff?.LeftRow is not null;
