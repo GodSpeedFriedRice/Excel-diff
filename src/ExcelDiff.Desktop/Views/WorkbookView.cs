@@ -17,7 +17,10 @@ internal sealed class WorkbookView : UserControl
     private readonly DataGridView differences = Appearance.Grid();
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
     private readonly TabPage list = new("差分一覧");
+    private readonly TabPage full = new("全体プレビュー");
     private readonly TabPage xml = new("XML");
+    private readonly FullSheetPane leftFull = new();
+    private readonly FullSheetPane rightFull = new();
     private readonly TextBox xmlLeft = XmlBox();
     private readonly TextBox xmlRight = XmlBox();
     private readonly TextBox detail = new()
@@ -30,6 +33,8 @@ internal sealed class WorkbookView : UserControl
     private readonly TableLayoutPanel listLayout = Appearance.Stack();
     private readonly TableLayoutPanel previews;
     private SheetDiff? xmlSheet;
+    private SheetDiff? fullSheet;
+    private Difference? fullDifference;
     private bool updating;
     private bool comparing;
 
@@ -75,6 +80,7 @@ internal sealed class WorkbookView : UserControl
             });
         }
         differences.CellValueNeeded += FillDifference;
+        differences.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) views.SelectedTab = full; };
         differences.CurrentCellChanged += (_, _) => { if (!updating) UpdateSelection(); };
 
         previews = Split(Pane("左 ・ 変更前", leftPath, leftPreview), Pane("右 ・ 変更後", rightPath, rightPreview));
@@ -86,7 +92,10 @@ internal sealed class WorkbookView : UserControl
         listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
         list.Controls.Add(listLayout);
         xml.Controls.Add(Split(xmlLeft, xmlRight));
-        views.TabPages.AddRange([list, xml]);
+        full.Controls.Add(Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)));
+        leftFull.Scrolled += rightFull.ScrollBy;
+        rightFull.Scrolled += leftFull.ScrollBy;
+        views.TabPages.AddRange([list, full, xml]);
         Appearance.Row(layout, views, fill: true);
         Controls.Add(layout);
 
@@ -96,11 +105,17 @@ internal sealed class WorkbookView : UserControl
             previews.Visible = showPreview.Checked;
             listLayout.RowStyles[2].SizeType = showPreview.Checked ? SizeType.Percent : SizeType.Absolute;
             listLayout.RowStyles[2].Height = showPreview.Checked ? 44 : 0;
-            savedZoom.Enabled = showPreview.Checked;
+            savedZoom.Enabled = views.SelectedTab == full || showPreview.Checked;
             UpdateSelection();
         };
         savedZoom.CheckedChanged += (_, _) => UpdateSelection();
-        views.SelectedIndexChanged += (_, _) => UpdateSelection();
+        views.SelectedIndexChanged += (_, _) =>
+        {
+            showPreview.Visible = views.SelectedTab == list;
+            savedZoom.Enabled = views.SelectedTab == full || (views.SelectedTab == list && showPreview.Checked);
+            UpdateSelection();
+            if (views.SelectedTab == full) leftFull.FocusSurface();
+        };
         LoadPicker(0);
     }
 
@@ -132,14 +147,19 @@ internal sealed class WorkbookView : UserControl
         return split;
     }
 
-    private static Control Pane(string title, string path, SheetPreview preview)
+    private static Control Pane(string title, string path, Control preview)
     {
         var pane = Appearance.Stack();
         var label = Appearance.Label($"{title}　{Path.GetFileName(path)}");
-        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White };
-        scroll.Controls.Add(preview);
         Appearance.Row(pane, label);
-        Appearance.Row(pane, scroll, fill: true);
+        if (preview is SheetPreview)
+        {
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White };
+            scroll.Controls.Add(preview);
+            Appearance.Row(pane, scroll, fill: true);
+        }
+        else
+            Appearance.Row(pane, preview, fill: true);
         return pane;
     }
 
@@ -232,29 +252,36 @@ internal sealed class WorkbookView : UserControl
             : diff is not null ? $"{diff.Item}　{DescribeLocation(diff)}{Environment.NewLine}変更前　{diff.Left ?? "—"}{Environment.NewLine}変更後　{diff.Right ?? "—"}"
             : sheet is null ? "比較できるシートがありません。" : "比較対象の項目に差分はありません。";
 
-        if (!showPreview.Checked) return;
-        var column = PreviewColumn(diff);
+        var column = diff?.Column ?? 1;
         var leftRow = diff?.LeftRow ?? diff?.RightRow ?? 1;
         var rightRow = diff?.RightRow ?? diff?.LeftRow ?? 1;
+        if (views.SelectedTab == full)
+        {
+            var jump = !ReferenceEquals(fullSheet, sheet) || !ReferenceEquals(fullDifference, diff);
+            fullSheet = sheet;
+            fullDifference = diff;
+            var rowLayout = diff?.Kind == ChangeKind.RowLayout || diff?.Column is null && diff?.LeftRow is not null;
+            var columnLayout = diff?.Kind == ChangeKind.ColumnLayout;
+            var leftMark = diff?.LeftRow is not null || columnLayout;
+            var rightMark = diff?.RightRow is not null || columnLayout;
+            leftFull.ShowSheet(sheet?.Left, leftRow, column, diff?.LeftMerge, rowLayout, columnLayout,
+                savedZoom.Checked, left.Date1904, jump, leftMark, diff?.LayoutCount ?? 1);
+            rightFull.ShowSheet(sheet?.Right, rightRow, column, diff?.RightMerge, rowLayout, columnLayout,
+                savedZoom.Checked, right.Date1904, jump, rightMark, diff?.LayoutCount ?? 1);
+            return;
+        }
+        if (!showPreview.Checked) return;
         leftPreview.ShowArea(sheet?.Left, leftRow, column, diff?.LeftMerge, diff?.LeftRow is not null,
             savedZoom.Checked, left.Date1904);
         rightPreview.ShowArea(sheet?.Right, rightRow, column, diff?.RightMerge, diff?.RightRow is not null,
             savedZoom.Checked, right.Date1904);
     }
 
-    private static int PreviewColumn(Difference? diff)
-    {
-        if (diff?.Column is int column) return column;
-        if (diff?.Item.StartsWith("列 ", StringComparison.Ordinal) == true &&
-            Address.TryColumn(diff.Item.Split(' ', 3)[1], out var settingColumn))
-            return settingColumn;
-        return 1;
-    }
 
     internal void MoveDifference(int delta)
     {
         if (differences.RowCount == 0) return;
-        views.SelectedTab = list;
+        if (views.SelectedTab == xml) views.SelectedTab = list;
         var index = Math.Clamp((differences.CurrentCell?.RowIndex ?? -1) + delta, 0, differences.RowCount - 1);
         differences.CurrentCell = differences[0, index];
     }

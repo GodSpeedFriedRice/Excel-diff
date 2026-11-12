@@ -59,7 +59,8 @@ public static class XlsxReader
         Add(settings, "既定レイアウト", sheet.Element(ns + "sheetFormatPr"), "defaultRowHeight", "defaultColWidth");
         if (area is not null) settings["印刷範囲"] = area;
 
-        var columnStyles = new Dictionary<int, int>();
+        var columnStyles = new Dictionary<int, IReadOnlyDictionary<string, string>>();
+        var rowStyles = new Dictionary<int, IReadOnlyDictionary<string, string>>();
         foreach (var column in sheet.Element(ns + "cols")?.Elements(ns + "col") ?? [])
         {
             var first = (int?)column.Attribute("min") ?? 0;
@@ -71,7 +72,7 @@ public static class XlsxReader
                 Add(settings, key, column, "width", "hidden");
                 if ((int?)column.Attribute("style") is int style)
                 {
-                    columnStyles[index] = style;
+                    columnStyles[index] = styles[style];
                     AddFormat(settings, key, styles[style], styles[0]);
                 }
             }
@@ -84,14 +85,21 @@ public static class XlsxReader
             .Where(c => c.Element(ns + "f") is XElement f && (string?)f.Attribute("t") == "shared" && f.Value.Length != 0)
             .ToDictionary(c => Required(c.Element(ns + "f")!, "si"), c => c);
         var rowIndex = 0;
+        var lastUsedRow = 0;
+        var lastUsedColumn = 0;
         foreach (var row in rowElements)
         {
             token.ThrowIfCancellationRequested();
             rowIndex = (int?)row.Attribute("r") ?? rowIndex + 1;
             if (rowIndex is < 1 or > 1048576) throw new InvalidDataException("行番号が無効です。");
             Add(settings, $"行 {rowIndex}", row, "ht", "hidden");
-            var rowStyle = (int?)row.Attribute("s");
-            if (rowStyle is int style) AddFormat(settings, $"行 {rowIndex}", styles[style], styles[0]);
+            IReadOnlyDictionary<string, string>? rowFormat = null;
+            if ((int?)row.Attribute("s") is int style)
+            {
+                rowFormat = styles[style];
+                rowStyles[rowIndex] = rowFormat;
+                AddFormat(settings, $"行 {rowIndex}", rowFormat, styles[0]);
+            }
             var cells = new SortedDictionary<int, Cell>();
             var column = 0;
             foreach (var cell in row.Elements(ns + "c"))
@@ -121,13 +129,26 @@ public static class XlsxReader
                     var origin = Address.Parse(Required(source, "r"));
                     formula = $"{source.Element(ns + "f")!.Value} [共有数式: 行 {rowIndex - origin.Row}, 列 {column - origin.Column}]";
                 }
-                var format = styles[(int?)cell.Attribute("s") ?? rowStyle ?? columnStyles.GetValueOrDefault(column)];
-                if (value.Length != 0 || formula is not null || !ReferenceEquals(format, styles[0]))
+                var inherited = rowFormat ?? columnStyles.GetValueOrDefault(column) ?? styles[0];
+                var format = (int?)cell.Attribute("s") is int cellStyle ? styles[cellStyle] : inherited;
+                if (value.Length != 0 || formula is not null || !ReferenceEquals(format, inherited))
+                {
                     cells.Add(column, new Cell(kind, value, formula, format));
+                    lastUsedColumn = Math.Max(lastUsedColumn, column);
+                }
             }
-            if (cells.Count > 0) rows.Add(rowIndex, cells);
+            if (cells.Count > 0)
+            {
+                rows.Add(rowIndex, cells);
+                lastUsedRow = Math.Max(lastUsedRow, rowIndex);
+            }
         }
-        return new Sheet(name, visibility, rows, settings, styles[0], merges, document);
+        return new Sheet(name, visibility, rows, settings, styles[0], merges, document)
+        {
+            RowFormats = rowStyles,
+            ColumnFormats = columnStyles,
+            UsedCellExtent = (lastUsedRow, lastUsedColumn)
+        };
     }
 
     private static XDocument Part(ZipArchive zip, string path)

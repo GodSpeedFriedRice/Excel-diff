@@ -8,6 +8,16 @@ public sealed record Sheet(string Name, string Visibility,
     IReadOnlyDictionary<string, string> Settings, IReadOnlyDictionary<string, string> DefaultFormat,
     MergeIndex Merges, XDocument Xml)
 {
+    internal IReadOnlyDictionary<int, IReadOnlyDictionary<string, string>> RowFormats { get; init; } =
+        new Dictionary<int, IReadOnlyDictionary<string, string>>();
+    internal IReadOnlyDictionary<int, IReadOnlyDictionary<string, string>> ColumnFormats { get; init; } =
+        new Dictionary<int, IReadOnlyDictionary<string, string>>();
+
+    public IReadOnlyDictionary<string, string> InheritedFormat(int row, int column) =>
+        RowFormats.GetValueOrDefault(row) ?? ColumnFormats.GetValueOrDefault(column) ?? DefaultFormat;
+
+    public (int Row, int Column)? UsedCellExtent { get; init; }
+
     public Cell? At(int row, int column) =>
         Rows.TryGetValue(row, out var cells) ? cells.GetValueOrDefault(column) : null;
 }

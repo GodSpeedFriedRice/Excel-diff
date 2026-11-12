@@ -207,7 +207,7 @@ internal sealed class SheetPreview : Control
                 PaintText(graphics, cell, fill);
     }
 
-    private static void PaintText(Graphics graphics, PreviewCell cell, SolidBrush brush)
+    internal static void PaintText(Graphics graphics, PreviewCell cell, SolidBrush brush)
     {
         var inset = Rectangle.Inflate(cell.Bounds, -2, -1);
         if (inset.Width <= 0 || inset.Height <= 0) return;
@@ -276,7 +276,7 @@ internal sealed class SheetPreview : Control
         return font;
     }
 
-    private static bool FontFlag(IReadOnlyDictionary<string, string> format, string key) =>
+    internal static bool FontFlag(IReadOnlyDictionary<string, string> format, string key) =>
         format.GetValueOrDefault($"フォント/{key}") == "1" ||
         format.GetValueOrDefault($"フォント/{key}/val") is "1" or "single" or "double";
 
@@ -287,7 +287,7 @@ internal sealed class SheetPreview : Control
     private static bool IsHidden(Sheet sheet, string name) => sheet.Settings.GetValueOrDefault(name + " / hidden") == "1";
     private static int Pixels(double value) => (int)Math.Round(Math.Clamp(value, 0, 4096));
 
-    private static Color ReadColor(IReadOnlyDictionary<string, string>? values, string key, Color fallback)
+    internal static Color ReadColor(IReadOnlyDictionary<string, string>? values, string key, Color fallback)
     {
         var hex = values?.GetValueOrDefault(key);
         return hex is { Length: >= 6 } &&
@@ -295,7 +295,7 @@ internal sealed class SheetPreview : Control
             ? Color.FromArgb(unchecked((int)0xFF000000) | rgb) : fallback;
     }
 
-    private static string Display(Cell? cell, bool date1904)
+    internal static string Display(Cell? cell, bool date1904)
     {
         if (cell is null) return "";
         if (cell.Kind != "n" || !double.TryParse(cell.Value, CultureInfo.InvariantCulture, out var number)) return cell.Display;
@@ -334,6 +334,6 @@ internal sealed class SheetPreview : Control
         base.Dispose(disposing);
     }
 
-    private sealed record PreviewCell(Rectangle Bounds, Rectangle Spill, string Text, Font Font,
+    internal sealed record PreviewCell(Rectangle Bounds, Rectangle Spill, string Text, Font Font,
         Color Foreground, Color Background, StringAlignment Alignment, StringAlignment Vertical, bool Wrap, bool Shrink);
 }

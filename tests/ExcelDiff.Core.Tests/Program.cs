@@ -30,7 +30,8 @@ try
     Check(keyed.Differences.Single(d => d.Kind == ChangeKind.Merge) is
         { LeftAddress: "D1:F1", RightAddress: "D1:E1", Parts.Count: 1 }, "結合範囲の変更を1件にまとめる");
     CheckMergedCells(left.Sheets[0]);
-    Check(keyed.Differences.Any(d => d is { Item: "行高", Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
+    CheckAxisChanges(scratch.FullName);
+    Check(keyed.Differences.Any(d => d is { Kind: ChangeKind.RowLayout, Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
     Check(WorkbookComparer.Compare(left, right, 6).Single() is { UsesKey: false, KeyWarning: not null }, "空のキー列はセル番地比較に戻す");
 
     var equivalent = Path.Combine(after, "equivalent.xlsx");
@@ -70,7 +71,7 @@ try
         foreach (var name in new[] { "sample.xlsx", "equivalent.xlsx", "right.xlsx" })
             File.Copy(Path.Combine(after, name), Path.Combine(output, "after", name), overwrite: true);
     }
-    Console.WriteLine("Excel-diff: 26 checks passed.");
+    Console.WriteLine("Excel-diff: 30 checks passed.");
 }
 finally
 {
@@ -121,7 +122,7 @@ static void CheckMergedCells(Sheet template)
     Check(resizedChange is { LeftAddress: "B2:D2", RightAddress: "B2:E2" } &&
         resizedChange.Parts!.Any(part => part.Item == "結合範囲"), "範囲と内容が同時に変わっても1件");
     var width = before with { Settings = new Dictionary<string, string> { ["列 C / width"] = "12" } };
-    Check(Compare(before, width).Single().Item == "列 C / width", "列幅の変更を結合セルへ重複計上しない");
+    Check(Compare(before, width).Single() is { Kind: ChangeKind.ColumnLayout, LeftAddress: "C 列" }, "列幅の変更を結合セルへ重複計上しない");
     var unmerged = Create(null, new Cell("text", "旧", null, firstFormat), new Cell("text", "独立した値", null, firstFormat));
     var unmergedChanges = Compare(before, unmerged);
     Check(unmergedChanges.Count(d => d.Kind == ChangeKind.Merge) == 1 &&
@@ -129,7 +130,35 @@ static void CheckMergedCells(Sheet template)
         "結合解除後の独立したセル値も検出する");
 }
 
-static void MakeBook(string path, bool updated, bool inline = false)
+static void CheckAxisChanges(string root)
+{
+    var before = Path.Combine(root, "axis-before.xlsx");
+    var after = Path.Combine(root, "axis-after.xlsx");
+    MakeBook(before, updated: false, axis: false);
+    MakeBook(after, updated: false, axis: true);
+    var a = XlsxReader.Read(before);
+    var b = XlsxReader.Read(after);
+    var changes = WorkbookComparer.Compare(a, b).Single().Differences;
+    Check(changes.Single(d => d.Kind == ChangeKind.ColumnLayout) is
+        { LeftAddress: "E:G 列", RightAddress: "E:G 列", LayoutCount: 3, Parts.Count: 4 },
+        "同じ列幅・表示状態・継承書式の変更を連続する列の1件にまとめる");
+    Check(changes.Single(d => d.Kind == ChangeKind.RowLayout) is
+        { LeftAddress: "10–11 行", RightAddress: "10–11 行", LayoutCount: 2, Parts.Count: 4 },
+        "同じ行高・表示状態・継承書式の変更を連続する行の1件にまとめる");
+    Check(changes.Count == 3 && changes.Single(d => d.Kind == ChangeKind.Format) is
+        { LeftAddress: "H8", RightAddress: "H8", Item: "縮小して全体を表示" },
+        "継承書式はセルに重複計上せず、個別指定の差分を残す");
+
+    var sheet = a.Sheets.Single();
+    var changed = sheet with
+    {
+        Settings = new Dictionary<string, string>(sheet.Settings) { ["既定レイアウト / defaultRowHeight"] = "18.0" }
+    };
+    Check(WorkbookComparer.Compare(a, new Workbook([changed], false)).Single().Differences.Single() is
+        { Item: "既定の行高", Left: "15", Right: "18" }, "既定の高さを変えてもシートの設定1件");
+}
+
+static void MakeBook(string path, bool updated, bool inline = false, bool? axis = null)
 {
     const string ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     const string relationships = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -175,9 +204,20 @@ static void MakeBook(string path, bool updated, bool inline = false)
         </styleSheet>
         """);
     string title = inline ? """<c r="A1" t="inlineStr"><is><t>商品コード</t></is></c>""" : """<c r="A1" t="s"><v>0</v></c>""";
+    var axisColumns = axis is bool columnChange
+        ? $"""<cols><col min="5" max="7" width="{(columnChange ? "14" : "10.00")}" customWidth="1" hidden="{(columnChange ? 1 : 0)}" style="{(columnChange ? 1 : 0)}"/></cols>"""
+        : "";
+    var axisRows = axis is bool rowChange
+        ? $"""
+            <row r="8"><c r="E8"><v>1</v></c><c r="F8"><v>2</v></c><c r="G8"><v>3</v></c><c r="H8" s="{(rowChange ? 2 : 0)}"><v>4</v></c></row>
+            <row r="10" ht="{(rowChange ? 25 : 20)}" customHeight="1" hidden="{(rowChange ? 1 : 0)}" s="{(rowChange ? 1 : 0)}" customFormat="1"><c r="A10"><v>1</v></c><c r="B10"><v>2</v></c><c r="C10"/></row>
+            <row r="11" ht="{(rowChange ? 25 : 20)}" customHeight="1" hidden="{(rowChange ? 1 : 0)}" s="{(rowChange ? 1 : 0)}" customFormat="1"><c r="A11"><v>1</v></c><c r="B11"><v>2</v></c></row>
+            """
+        : "";
     Add("xl/worksheets/sheet1.xml", $"""
         <worksheet xmlns="{ns}">
           <sheetViews><sheetView workbookViewId="0" zoomScale="{(updated ? 125 : 100)}"/></sheetViews>
+          {axisColumns}
           <sheetData>
             <row r="1">{title}</row>
             <row r="2" ht="{(updated ? 26 : 20)}" customHeight="1">
@@ -188,6 +228,7 @@ static void MakeBook(string path, bool updated, bool inline = false)
             </row>
             <row r="3"><c r="A3" t="inlineStr"><is><t>{(updated ? "P-103" : "P-102")}</t></is></c></row>
             <row r="4"><c r="A4" t="inlineStr"><is><t>P-104</t></is></c></row>
+            {axisRows}
           </sheetData>
           <mergeCells><mergeCell ref="{(updated ? "D1:E1" : "D1:F1")}"/></mergeCells>
           <pageSetup scale="{(updated ? 80 : 95)}"/>

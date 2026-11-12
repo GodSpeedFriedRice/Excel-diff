@@ -1,17 +1,27 @@
+using System.Globalization;
 using ExcelDiff.Core.Workbooks;
 
 namespace ExcelDiff.Core.Comparison;
 
-public enum ChangeKind { Value, Formula, Format, Setting, Added, Removed, Merge }
+public enum ChangeKind { Value, Formula, Format, Setting, Added, Removed, Merge, RowLayout, ColumnLayout }
 
 public sealed record DifferencePart(string Item, string? Left, string? Right);
 
 public sealed record Difference(ChangeKind Kind, string Item, string? Left, string? Right,
     int? LeftRow = null, int? RightRow = null, int? Column = null,
-    MergeRange? LeftMerge = null, MergeRange? RightMerge = null, IReadOnlyList<DifferencePart>? Parts = null)
+    MergeRange? LeftMerge = null, MergeRange? RightMerge = null, IReadOnlyList<DifferencePart>? Parts = null, int LayoutCount = 1)
 {
-    public string LeftAddress => LeftMerge?.ToString() ?? Address.Format(LeftRow, Column);
-    public string RightAddress => RightMerge?.ToString() ?? Address.Format(RightRow, Column);
+    public string LeftAddress => LeftMerge?.ToString() ?? DescribeAddress(LeftRow);
+    public string RightAddress => RightMerge?.ToString() ?? DescribeAddress(RightRow);
+
+    private string DescribeAddress(int? row)
+    {
+        if (Kind == ChangeKind.ColumnLayout && Column is int column)
+            return LayoutCount == 1 ? $"{Address.Column(column)} 列" : $"{Address.Column(column)}:{Address.Column(column + LayoutCount - 1)} 列";
+        if (Kind == ChangeKind.RowLayout && row is int number && LayoutCount > 1)
+            return $"{number}–{number + LayoutCount - 1} 行";
+        return Address.Format(row, Column);
+    }
 }
 
 public sealed record AlignedRow(int? Left, int? Right);
@@ -53,9 +63,12 @@ public static class WorkbookComparer
                     Add(changes, ChangeKind.Setting, "日付システム", left.Date1904 ? "1904" : "1900", right.Date1904 ? "1904" : "1900");
                     compareDateSystem = false;
                 }
-                CompareSettings(changes, a.Settings, b.Settings, skipRows: true);
-                var leftRowSettings = GroupRowSettings(a);
-                var rightRowSettings = GroupRowSettings(b);
+                CompareSettings(changes, a.Settings, b.Settings);
+                AddDefaultSizeChange(changes, a, b, rows: true);
+                AddDefaultSizeChange(changes, a, b, rows: false);
+                var leftRowSettings = GroupLayoutSettings(a, rows: true);
+                var rightRowSettings = GroupLayoutSettings(b, rows: true);
+                AddColumnChanges(changes, a, b);
                 if (keyColumn is not null && warning is null)
                 {
                     var matched = rows.Where(r => r.Left.HasValue && r.Right.HasValue).ToArray();
@@ -76,6 +89,9 @@ public static class WorkbookComparer
         Dictionary<int, IReadOnlyDictionary<string, string>> rightRowSettings, bool usesKey, CancellationToken token)
     {
         var merges = new MergeComparison(left, right, rows, usesKey, token);
+        var layout = new List<Difference>();
+        var leftDefaultHeight = DefaultSize(left, rows: true);
+        var rightDefaultHeight = DefaultSize(right, rows: true);
         foreach (var row in rows)
         {
             token.ThrowIfCancellationRequested();
@@ -94,8 +110,12 @@ public static class WorkbookComparer
                 continue;
             }
 
-            CompareSettings(changes, leftRowSettings.GetValueOrDefault(row.Left.Value, Empty),
-                rightRowSettings.GetValueOrDefault(row.Right.Value, Empty), row);
+            if (leftRowSettings.ContainsKey(row.Left.Value) || rightRowSettings.ContainsKey(row.Right.Value))
+            {
+                var parts = CompareLayout(leftRowSettings.GetValueOrDefault(row.Left.Value, Empty),
+                    rightRowSettings.GetValueOrDefault(row.Right.Value, Empty), "ht", leftDefaultHeight, rightDefaultHeight);
+                AppendLayout(layout, ChangeKind.RowLayout, row.Left, row.Right, null, parts);
+            }
             foreach (var column in (leftCells?.Keys ?? []).Union(rightCells?.Keys ?? []).Order())
             {
                 var before = leftCells?.GetValueOrDefault(column);
@@ -104,13 +124,26 @@ public static class WorkbookComparer
                 var b = FindRange(rightRanges, column);
                 if (a is not null || b is not null)
                 {
-                    if (merges.Collect(a, b, before, after, row, column, left.DefaultFormat, right.DefaultFormat)) continue;
+                    if (merges.Collect(a, b, before, after, row, column,
+                        left.InheritedFormat(row.Left.Value, column), right.InheritedFormat(row.Right.Value, column))) continue;
                     before = a is null ? before : null;
                     after = b is null ? after : null;
                 }
                 CompareCell(changes, left, right, before, after, row, column);
             }
         }
+        if (usesKey)
+        {
+            // A sized blank row has no key value and is absent from the aligned data rows.
+            foreach (var number in leftRowSettings.Keys.Union(rightRowSettings.Keys).Order())
+            {
+                if (left.Rows.ContainsKey(number) || right.Rows.ContainsKey(number)) continue;
+                var parts = CompareLayout(leftRowSettings.GetValueOrDefault(number, Empty),
+                    rightRowSettings.GetValueOrDefault(number, Empty), "ht", leftDefaultHeight, rightDefaultHeight);
+                AppendLayout(layout, ChangeKind.RowLayout, number, number, null, parts);
+            }
+        }
+        changes.AddRange(layout);
         merges.AppendTo(changes);
     }
 
@@ -126,8 +159,20 @@ public static class WorkbookComparer
         }
         Add(changes, ChangeKind.Value, "値", oldValue, newValue, row, column);
         Add(changes, ChangeKind.Formula, "数式", before?.Formula, after?.Formula, row, column);
-        CompareSettings(changes, before?.Format ?? left.DefaultFormat,
-            after?.Format ?? right.DefaultFormat, row, column);
+        var leftBase = row.Left is int l ? left.InheritedFormat(l, column) : left.DefaultFormat;
+        var rightBase = row.Right is int r ? right.InheritedFormat(r, column) : right.DefaultFormat;
+        var leftFormat = before?.Format ?? leftBase;
+        var rightFormat = after?.Format ?? rightBase;
+        if (ReferenceEquals(leftFormat, rightFormat) ||
+            (ReferenceEquals(leftFormat, leftBase) && ReferenceEquals(rightFormat, rightBase))) return;
+
+        foreach (var key in leftFormat.Keys.Union(rightFormat.Keys).Order(StringComparer.Ordinal))
+        {
+            var oldValueForKey = leftFormat.GetValueOrDefault(key);
+            var newValueForKey = rightFormat.GetValueOrDefault(key);
+            if (oldValueForKey == leftBase.GetValueOrDefault(key) && newValueForKey == rightBase.GetValueOrDefault(key)) continue;
+            Add(changes, ChangeKind.Format, FormatLabel(key), oldValueForKey, newValueForKey, row, column);
+        }
     }
 
     private static IReadOnlyList<MergeRange> RangesAt(Sheet sheet, int? row)
@@ -224,7 +269,9 @@ public static class WorkbookComparer
                     {
                         var oldValue = beforeFormat.GetValueOrDefault(key);
                         var newValue = afterFormat.GetValueOrDefault(key);
-                        if (oldValue != newValue) leftGroups[a].Parts.Add(new DifferencePart(key, oldValue, newValue));
+                        if (oldValue != newValue &&
+                            (oldValue != leftDefault.GetValueOrDefault(key) || newValue != rightDefault.GetValueOrDefault(key)))
+                            leftGroups[a].Parts.Add(new DifferencePart(key, oldValue, newValue));
                     }
                 }
                 return true;
@@ -291,7 +338,7 @@ public static class WorkbookComparer
         }
         var leftNumbers = l.ToHashSet();
         var rightNumbers = r.ToHashSet();
-        return leftNumbers.Union(rightNumbers).Union(GroupRowSettings(left).Keys).Union(GroupRowSettings(right).Keys)
+        return leftNumbers.Union(rightNumbers).Union(GroupLayoutSettings(left, rows: true).Keys).Union(GroupLayoutSettings(right, rows: true).Keys)
             .Order().Select(i => leftNumbers.Contains(i) == rightNumbers.Contains(i) ? new AlignedRow(i, i) :
                 leftNumbers.Contains(i) ? new AlignedRow(i, null) : new AlignedRow(null, i)).ToArray();
     }
@@ -310,22 +357,99 @@ public static class WorkbookComparer
 
     private static readonly IReadOnlyDictionary<string, string> Empty = new Dictionary<string, string>();
 
-    private static Dictionary<int, IReadOnlyDictionary<string, string>> GroupRowSettings(Sheet sheet) =>
-        sheet.Settings.Where(item => item.Key.StartsWith("行 ", StringComparison.Ordinal))
-            .Select(item => (Parts: item.Key.Split(" / ", 2), item.Value))
-            .GroupBy(item => int.Parse(item.Parts[0].AsSpan(2)))
-            .ToDictionary(group => group.Key, group => (IReadOnlyDictionary<string, string>)group.ToDictionary(
-                item => item.Parts[1] == "ht" ? "行高" : item.Parts[1] == "hidden" ? "行の非表示" : item.Parts[1],
-                item => item.Value));
+    private static Dictionary<int, IReadOnlyDictionary<string, string>> GroupLayoutSettings(Sheet sheet, bool rows)
+    {
+        var prefix = rows ? "行 " : "列 ";
+        var settings = new Dictionary<int, Dictionary<string, string>>();
+        foreach (var (name, value) in sheet.Settings)
+        {
+            if (!name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            var separator = name.IndexOf(" / ", StringComparison.Ordinal);
+            if (separator < 0) continue;
+            var label = name.AsSpan(prefix.Length, separator - prefix.Length);
+            if (!(rows ? int.TryParse(label, out var index) : Address.TryColumn(label, out index))) continue;
+            if (!settings.TryGetValue(index, out var items)) settings[index] = items = new Dictionary<string, string>();
+            items[name[(separator + 3)..]] = value;
+        }
+        return settings.ToDictionary(entry => entry.Key, entry => (IReadOnlyDictionary<string, string>)entry.Value);
+    }
+
+    private static string DefaultSize(Sheet sheet, bool rows)
+    {
+        var name = rows ? "defaultRowHeight" : "defaultColWidth";
+        return NormalizeSize(sheet.Settings.GetValueOrDefault("既定レイアウト / " + name) ?? (rows ? "15" : "8.43"));
+    }
+
+    private static string NormalizeSize(string size) => decimal.TryParse(size, NumberStyles.Float,
+        CultureInfo.InvariantCulture, out var value) ? value.ToString("G29", CultureInfo.InvariantCulture) : size;
+
+    private static void AddDefaultSizeChange(List<Difference> changes, Sheet left, Sheet right, bool rows) =>
+        Add(changes, ChangeKind.Setting, rows ? "既定の行高" : "既定の列幅", DefaultSize(left, rows), DefaultSize(right, rows));
+
+    private static DifferencePart[] CompareLayout(IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right, string sizeKey, string leftDefault, string rightDefault)
+    {
+        var parts = new List<DifferencePart>();
+        foreach (var key in left.Keys.Union(right.Keys).Order(StringComparer.Ordinal))
+        {
+            var before = left.GetValueOrDefault(key);
+            var after = right.GetValueOrDefault(key);
+            var label = FormatLabel(key);
+            if (key == sizeKey)
+            {
+                before = NormalizeSize(before ?? leftDefault);
+                after = NormalizeSize(after ?? rightDefault);
+                if (before == leftDefault && after == rightDefault) continue;
+                label = key == "ht" ? "行高" : "列幅";
+            }
+            else if (key == "hidden")
+            {
+                before = before is "1" or "true" ? "非表示" : "表示";
+                after = after is "1" or "true" ? "非表示" : "表示";
+                label = "表示状態";
+            }
+            if (before != after) parts.Add(new DifferencePart(label, before, after));
+        }
+        return parts.ToArray();
+    }
+
+    private static void AddColumnChanges(List<Difference> changes, Sheet left, Sheet right)
+    {
+        var a = GroupLayoutSettings(left, rows: false);
+        var b = GroupLayoutSettings(right, rows: false);
+        var before = DefaultSize(left, rows: false);
+        var after = DefaultSize(right, rows: false);
+        foreach (var column in a.Keys.Union(b.Keys).Order())
+        {
+            var parts = CompareLayout(a.GetValueOrDefault(column, Empty), b.GetValueOrDefault(column, Empty), "width", before, after);
+            AppendLayout(changes, ChangeKind.ColumnLayout, null, null, column, parts);
+        }
+    }
+
+    private static void AppendLayout(List<Difference> changes, ChangeKind kind, int? leftRow, int? rightRow,
+        int? column, DifferencePart[] parts)
+    {
+        if (parts.Length == 0) return;
+        var previous = changes.Count == 0 ? null : changes[^1];
+        if (previous?.Kind == kind && previous.LeftRow + previous.LayoutCount == leftRow &&
+            previous.RightRow + previous.LayoutCount == rightRow && previous.Column + previous.LayoutCount == column &&
+            previous.Parts!.SequenceEqual(parts))
+        {
+            changes[^1] = previous with { LayoutCount = previous.LayoutCount + 1 };
+            return;
+        }
+        changes.Add(new Difference(kind, kind == ChangeKind.RowLayout ? "行設定" : "列設定", parts[0].Left, parts[0].Right,
+            leftRow, rightRow, column, Parts: parts));
+    }
 
     private static void CompareSettings(List<Difference> changes, IReadOnlyDictionary<string, string> left,
-        IReadOnlyDictionary<string, string> right, AlignedRow? row = null, int? column = null, bool skipRows = false)
+        IReadOnlyDictionary<string, string> right)
     {
         if (ReferenceEquals(left, right)) return;
-        var kind = column is null ? ChangeKind.Setting : ChangeKind.Format;
         foreach (var key in left.Keys.Union(right.Keys).Order(StringComparer.Ordinal))
-            if (!skipRows || !key.StartsWith("行 ", StringComparison.Ordinal))
-                Add(changes, kind, FormatLabel(key), left.GetValueOrDefault(key), right.GetValueOrDefault(key), row, column);
+            if (!key.StartsWith("行 ", StringComparison.Ordinal) && !key.StartsWith("列 ", StringComparison.Ordinal) &&
+                key is not ("既定レイアウト / defaultRowHeight" or "既定レイアウト / defaultColWidth"))
+                Add(changes, ChangeKind.Setting, FormatLabel(key), left.GetValueOrDefault(key), right.GetValueOrDefault(key));
     }
 
     private static void Add(List<Difference> changes, ChangeKind kind, string item, string? before, string? after,
