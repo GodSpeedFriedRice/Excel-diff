@@ -5,7 +5,8 @@ namespace ExcelDiff.Core.Workbooks;
 public sealed record Workbook(IReadOnlyList<Sheet> Sheets, bool Date1904);
 public sealed record Sheet(string Name, string Visibility,
     IReadOnlyDictionary<int, IReadOnlyDictionary<int, Cell>> Rows,
-    IReadOnlyDictionary<string, string> Settings, IReadOnlyDictionary<string, string> DefaultFormat, XDocument Xml)
+    IReadOnlyDictionary<string, string> Settings, IReadOnlyDictionary<string, string> DefaultFormat,
+    MergeIndex Merges, XDocument Xml)
 {
     public Cell? At(int row, int column) =>
         Rows.TryGetValue(row, out var cells) ? cells.GetValueOrDefault(column) : null;

@@ -27,7 +27,9 @@ try
     Check(keyed.Differences.Any(d => d is { Item: "縮小して全体を表示", Left: "0", Right: "1" }), "縮小表示を比較する");
     Check(keyed.Differences.Any(d => d is { Item: "表示倍率", Left: "100", Right: "125" }), "画面の表示倍率を比較する");
     Check(keyed.Differences.Any(d => d is { Item: "印刷倍率", Left: "95", Right: "80" }), "印刷倍率を比較する");
-    Check(keyed.Differences.Any(d => d.Item.StartsWith("結合 ", StringComparison.Ordinal)), "結合範囲を比較する");
+    Check(keyed.Differences.Single(d => d.Kind == ChangeKind.Merge) is
+        { LeftAddress: "D1:F1", RightAddress: "D1:E1", Parts.Count: 1 }, "結合範囲の変更を1件にまとめる");
+    CheckMergedCells(left.Sheets[0]);
     Check(keyed.Differences.Any(d => d is { Item: "行高", Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
     Check(WorkbookComparer.Compare(left, right, 6).Single() is { UsesKey: false, KeyWarning: not null }, "空のキー列はセル番地比較に戻す");
 
@@ -68,7 +70,7 @@ try
         foreach (var name in new[] { "sample.xlsx", "equivalent.xlsx", "right.xlsx" })
             File.Copy(Path.Combine(after, name), Path.Combine(output, "after", name), overwrite: true);
     }
-    Console.WriteLine("Excel-diff: 21 checks passed.");
+    Console.WriteLine("Excel-diff: 26 checks passed.");
 }
 finally
 {
@@ -78,6 +80,53 @@ finally
 static void Check(bool result, string name)
 {
     if (!result) throw new InvalidOperationException(name);
+}
+
+static void CheckMergedCells(Sheet template)
+{
+    var firstFormat = new Dictionary<string, string> { ["フォント/sz/val"] = "11" };
+    var secondFormat = new Dictionary<string, string>
+    {
+        ["フォント/sz/val"] = "12", ["罫線/right/style"] = "thin"
+    };
+    var merge = new MergeRange(2, 2, 2, 4);
+    Sheet Create(MergeRange? area, Cell anchor, Cell? covered = null)
+    {
+        var row = new Dictionary<int, Cell> { [2] = anchor };
+        if (covered is not null)
+        {
+            row[3] = covered;
+            if (area is not null) row[4] = covered;
+        }
+        return template with
+        {
+            Rows = new Dictionary<int, IReadOnlyDictionary<int, Cell>> { [2] = row },
+            Settings = new Dictionary<string, string>(),
+            Merges = new MergeIndex(area is null ? [] : [area])
+        };
+    }
+
+    var before = Create(merge, new Cell("text", "旧", null, firstFormat), new Cell("n", "", null, firstFormat));
+    var after = Create(merge, new Cell("text", "新", null, secondFormat), new Cell("n", "", null, secondFormat));
+    IReadOnlyList<Difference> Compare(Sheet a, Sheet b) =>
+        WorkbookComparer.Compare(new Workbook([a], false), new Workbook([b], false)).Single().Differences;
+
+    var changes = Compare(before, after);
+    Check(changes.Count == 1 && changes[0] is
+        { Kind: ChangeKind.Merge, LeftAddress: "B2:D2", RightAddress: "B2:D2", Parts.Count: 3 },
+        "値・書式・重複する罫線差分を結合範囲の1件にまとめる");
+    Check(Compare(before, before).Count == 0, "同じ結合セルに差分を出さない");
+    var resized = after with { Merges = new MergeIndex([new MergeRange(2, 2, 2, 5)]) };
+    var resizedChange = Compare(before, resized).Single();
+    Check(resizedChange is { LeftAddress: "B2:D2", RightAddress: "B2:E2" } &&
+        resizedChange.Parts!.Any(part => part.Item == "結合範囲"), "範囲と内容が同時に変わっても1件");
+    var width = before with { Settings = new Dictionary<string, string> { ["列 C / width"] = "12" } };
+    Check(Compare(before, width).Single().Item == "列 C / width", "列幅の変更を結合セルへ重複計上しない");
+    var unmerged = Create(null, new Cell("text", "旧", null, firstFormat), new Cell("text", "独立した値", null, firstFormat));
+    var unmergedChanges = Compare(before, unmerged);
+    Check(unmergedChanges.Count(d => d.Kind == ChangeKind.Merge) == 1 &&
+        unmergedChanges.Any(d => d.Kind == ChangeKind.Value && d.RightAddress == "C2" && d.Right == "独立した値"),
+        "結合解除後の独立したセル値も検出する");
 }
 
 static void MakeBook(string path, bool updated, bool inline = false)

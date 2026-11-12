@@ -5,7 +5,7 @@ namespace ExcelDiff.Desktop.Views;
 
 internal sealed class CompareWindow : Form
 {
-    private readonly TabControl tabs = new() { Dock = DockStyle.Fill, Padding = new Point(15, 5) };
+    private readonly ComparisonTabs tabs = new();
     private readonly TabPage folderTab = new("フォルダ比較");
     private readonly DataGridView fileList = Appearance.Grid();
     private readonly CheckBox showSheets = new() { Text = "シートまで差分を見る", AutoSize = true, Checked = true };
@@ -31,7 +31,10 @@ internal sealed class CompareWindow : Form
         var menu = new MenuStrip { Dock = DockStyle.Fill, BackColor = Color.White };
         var file = new ToolStripMenuItem("ファイル");
         file.DropDownItems.Add(new ToolStripMenuItem("開く…", null, async (_, _) => await Choose()) { ShortcutKeys = Keys.Control | Keys.O });
-        file.DropDownItems.Add("タブを閉じる", null, (_, _) => CloseSelectedTab());
+        file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseDetail(tabs.SelectedTab))
+        {
+            ShortcutKeys = Keys.Control | Keys.W
+        });
         file.DropDownItems.Add("終了", null, (_, _) => Close());
         var view = new ToolStripMenuItem("表示");
         view.DropDownItems.Add("フォルダ比較", null, (_, _) => { if (tabs.TabPages.Contains(folderTab)) tabs.SelectedTab = folderTab; });
@@ -88,16 +91,7 @@ internal sealed class CompareWindow : Form
         showSame.CheckedChanged += (_, _) => RenderFiles();
         showSheets.CheckedChanged += (_, _) => RenderFiles();
         tabs.SelectedIndexChanged += (_, _) => UpdateStatus();
-        tabs.MouseDown += (_, e) =>
-        {
-            if (e.Button == MouseButtons.Middle && tabs.SelectedTab != folderTab)
-                for (var i = 0; i < tabs.TabCount; i++)
-                    if (tabs.GetTabRect(i).Contains(e.Location) && tabs.TabPages[i] != folderTab)
-                    {
-                        tabs.TabPages[i].Dispose();
-                        break;
-                    }
-        };
+        tabs.CloseRequested += CloseDetail;
         Shown += async (_, _) =>
         {
             await Choose();
@@ -120,7 +114,7 @@ internal sealed class CompareWindow : Form
         if (busy || targets is not Targets current) return;
         if (tabs.SelectedTab?.Tag is WorkbookView view)
         {
-            await LoadBook(view.LeftPath, view.RightPath, null, tabs.SelectedTab);
+            await LoadBook(view.LeftPath, view.RightPath, null, tabs.SelectedTab, view.SelectedSheet);
             return;
         }
         if (current.Folders) await LoadFolder(current, newSelection: false);
@@ -155,12 +149,13 @@ internal sealed class CompareWindow : Form
                 ClearTabs();
                 targets = newSelection;
             }
+            if (replace?.IsDisposed == true) return;
             replace?.Dispose();
             var view = new WorkbookView(left, right, result.a, result.b, result.Diff) { Dock = DockStyle.Fill };
             if (sheet is not null) view.SelectSheet(sheet);
             var title = Path.GetFileName(left);
             if (Path.GetFileName(right) != title) title += " ↔ " + Path.GetFileName(right);
-            var page = new TabPage(title) { Tag = view };
+            var page = new TabPage(title) { Tag = view, ToolTipText = title };
             page.Controls.Add(view);
             tabs.TabPages.Add(page);
             tabs.SelectedTab = page;
@@ -293,9 +288,13 @@ internal sealed class CompareWindow : Form
             }
     }
 
-    private void CloseSelectedTab()
+    private void CloseDetail(TabPage? page)
     {
-        if (tabs.SelectedTab is { Tag: WorkbookView } page) page.Dispose();
+        if (page?.Tag is not WorkbookView || !tabs.TabPages.Contains(page)) return;
+        var wasSelected = tabs.SelectedTab == page;
+        page.Dispose();
+        if (wasSelected && tabs.TabCount == 1 && tabs.TabPages.Contains(folderTab)) tabs.SelectedTab = folderTab;
+        UpdateStatus();
     }
 
     private void ClearTabs()

@@ -76,8 +76,8 @@ public static class XlsxReader
                 }
             }
         }
-        foreach (var merge in sheet.Element(ns + "mergeCells")?.Elements(ns + "mergeCell") ?? [])
-            settings[$"結合 {Required(merge, "ref")}"] = "あり";
+        var merges = new MergeIndex((sheet.Element(ns + "mergeCells")?.Elements(ns + "mergeCell") ?? [])
+            .Select(merge => MergeRange.Parse(Required(merge, "ref"))));
 
         var rowElements = sheet.Element(ns + "sheetData")?.Elements(ns + "row") ?? [];
         var sharedFormulas = rowElements.SelectMany(r => r.Elements(ns + "c"))
@@ -127,7 +127,7 @@ public static class XlsxReader
             }
             if (cells.Count > 0) rows.Add(rowIndex, cells);
         }
-        return new Sheet(name, visibility, rows, settings, styles[0], document);
+        return new Sheet(name, visibility, rows, settings, styles[0], merges, document);
     }
 
     private static XDocument Part(ZipArchive zip, string path)
