@@ -37,8 +37,10 @@ internal sealed class SheetRaster : IDisposable
     internal PreviewAxis Rows { get; }
     internal PreviewAxis Columns { get; }
     internal int LastRow { get; }
+    // Keep horizontal navigation near the used range, while allowing overflow into visible blank columns.
     internal int LastColumn { get; }
-    internal int TileColumns => TileCount(Columns.Position(LastColumn + 1));
+    internal int TileColumns => TileCount(Columns.Position(Columns.Limit + 1));
+    internal int UsedTileColumns => TileCount(Columns.Position(LastColumn + 1));
     internal int TileRows => TileCount(Rows.Position(LastRow + 1));
 
     private static int TileCount(long end) => (int)((end + TileSize - 1) / TileSize);
@@ -55,7 +57,7 @@ internal sealed class SheetRaster : IDisposable
             var originX = (long)tile.Column * TileSize;
             var originY = (long)tile.Row * TileSize;
             var firstColumn = Columns.AtPixel(originX);
-            var lastColumn = Math.Min(LastColumn, Columns.AtPixel(originX + TileSize - 1));
+            var lastColumn = Columns.AtPixel(originX + TileSize - 1);
             var firstRow = Rows.AtPixel(originY);
             var lastRow = Math.Min(LastRow, Rows.AtPixel(originY + TileSize - 1));
             var columns = Columns.Visible(firstColumn, lastColumn, int.MaxValue);
@@ -143,7 +145,7 @@ internal sealed class SheetRaster : IDisposable
                         var align = cell.Format.GetValueOrDefault("配置/horizontal");
                         if (align is null or "general" or "left" or "center")
                         {
-                            var end = OccupiedNeighbor(occupied, column, forward: true) ?? LastColumn + 1;
+                            var end = OccupiedNeighbor(occupied, column, forward: true) ?? Columns.Limit + 1;
                             if (mergeInsertion < merges.Count) end = Math.Min(end, merges[mergeInsertion].FirstColumn);
                             spill.Width = X(end) - spill.Left;
                         }

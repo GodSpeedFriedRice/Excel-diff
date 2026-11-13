@@ -209,14 +209,17 @@ internal sealed class SheetPreview : Control
 
     internal static void PaintText(Graphics graphics, PreviewCell cell, SolidBrush brush)
     {
-        var inset = Rectangle.Inflate(cell.Bounds, -2, -1);
-        if (inset.Width <= 0 || inset.Height <= 0) return;
+        if (cell.Bounds.Width <= 0 || cell.Bounds.Height <= 0) return;
+        // At low saved zoom even a visible cell may be only one pixel wide.
+        var paddingX = Math.Min(2, (cell.Bounds.Width - 1) / 2);
+        var paddingY = Math.Min(1, (cell.Bounds.Height - 1) / 2);
+        var inset = Rectangle.Inflate(cell.Bounds, -paddingX, -paddingY);
 
         var state = graphics.Save();
         Font? smaller = null;
         try
         {
-            var clip = Rectangle.Inflate(cell.Spill, -2, -1);
+            var clip = Rectangle.Inflate(cell.Spill, -paddingX, -paddingY);
             graphics.SetClip(clip, CombineMode.Intersect);
             using var format = new StringFormat(StringFormat.GenericTypographic)
             {
@@ -226,7 +229,9 @@ internal sealed class SheetPreview : Control
             var layout = (RectangleF)inset;
             if (!cell.Wrap)
             {
-                format.FormatFlags |= StringFormatFlags.NoWrap;
+                // The graphics clip already limits the text to the row and the available columns.
+                format.FormatFlags = (format.FormatFlags | StringFormatFlags.NoWrap | StringFormatFlags.NoClip)
+                    & ~StringFormatFlags.LineLimit;
                 var width = graphics.MeasureString(cell.Text, font, PointF.Empty, StringFormat.GenericTypographic).Width + 1;
                 if (cell.Shrink && width > inset.Width)
                 {

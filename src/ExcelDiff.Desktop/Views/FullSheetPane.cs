@@ -221,9 +221,12 @@ internal sealed class FullSheetPane : UserControl
         if (inRowHeader && inColumnHeader) return;
 
         var raster = active.Raster;
-        int? pickedRow = inColumnHeader ? null : raster.Rows.AtPixel(raster.Rows.Position(row) + SourceOffset(point.Y - HeaderHeight));
-        int? pickedColumn = inRowHeader ? null : raster.Columns.AtPixel(raster.Columns.Position(column) + SourceOffset(point.X - HeaderWidth));
-        if (pickedRow > raster.LastRow || pickedColumn > raster.LastColumn) return;
+        var x = raster.Columns.Position(column) + SourceOffset(point.X - HeaderWidth);
+        var y = raster.Rows.Position(row) + SourceOffset(point.Y - HeaderHeight);
+        if ((!inRowHeader && x >= raster.Columns.Position(raster.Columns.Limit + 1)) ||
+            (!inColumnHeader && y >= raster.Rows.Position(raster.LastRow + 1))) return;
+        int? pickedRow = inColumnHeader ? null : raster.Rows.AtPixel(y);
+        int? pickedColumn = inRowHeader ? null : raster.Columns.AtPixel(x);
         var mark = marks?.Pick(pickedRow, pickedColumn);
 
         MergeRange? merge = null;
@@ -261,7 +264,7 @@ internal sealed class FullSheetPane : UserControl
         var x = active.Raster.Columns.Position(column);
         var y = active.Raster.Rows.Position(row);
         var visibleRows = active.Raster.Rows.Visible(row, active.Raster.LastRow, SourcePixels(body.Height));
-        var visibleColumns = active.Raster.Columns.Visible(column, active.Raster.LastColumn, SourcePixels(body.Width));
+        var visibleColumns = active.Raster.Columns.Visible(column, active.Raster.Columns.Limit, SourcePixels(body.Width));
         using var tint = new SolidBrush(Color.Transparent);
         using var outline = new Pen(Color.Transparent);
         var state = graphics.Save();
@@ -443,10 +446,10 @@ internal sealed class FullSheetPane : UserControl
         internal TileSession(SheetRaster raster)
         {
             Raster = raster;
-            keepOnDisk = (long)raster.TileRows * raster.TileColumns > ResidentLimit;
+            keepOnDisk = (long)raster.TileRows * raster.UsedTileColumns > ResidentLimit;
             if (!keepOnDisk)
                 for (var tileRow = 0; tileRow < raster.TileRows; tileRow++)
-                    for (var tileColumn = 0; tileColumn < raster.TileColumns; tileColumn++)
+                    for (var tileColumn = 0; tileColumn < raster.UsedTileColumns; tileColumn++)
                         eager.Enqueue(new PreviewTile(tileColumn, tileRow));
         }
 
@@ -470,7 +473,7 @@ internal sealed class FullSheetPane : UserControl
 
         internal Bitmap Load(PreviewTile tile)
         {
-            if (!keepOnDisk) return Raster.Render(tile);
+            if (!keepOnDisk && tile.Column < Raster.UsedTileColumns) return Raster.Render(tile);
             directory ??= Directory.CreateTempSubdirectory("excel-diff-preview-");
             var path = Path.Combine(directory.FullName, $"{tile.Column}-{tile.Row}.png");
             if (File.Exists(path))
@@ -496,9 +499,14 @@ internal sealed class FullSheetPane : UserControl
             Images.Add(tile, bitmap);
             prepared.Add(tile);
             if (Images.Count <= Math.Max(ResidentLimit, Visible.Length + 6)) return;
-            var evict = Images.Keys.First(key => key != tile && !Visible.Contains(key));
-            Images[evict].Dispose();
-            Images.Remove(evict);
+            foreach (var candidate in Images.Keys)
+            {
+                if ((!keepOnDisk && candidate.Column < Raster.UsedTileColumns) ||
+                    candidate == tile || Visible.Contains(candidate)) continue;
+                Images[candidate].Dispose();
+                Images.Remove(candidate);
+                break;
+            }
         }
 
         public void Dispose()

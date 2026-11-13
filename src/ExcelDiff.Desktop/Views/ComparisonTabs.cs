@@ -8,6 +8,7 @@ internal sealed class ComparisonTabs : TabControl
     private const int LeftButtonUp = 0x0202;
     private const int LeftButtonDoubleClick = 0x0203;
     private TabPage? pressed;
+    private TabPage? hoveredClose;
 
     internal ComparisonTabs()
     {
@@ -36,6 +37,31 @@ internal sealed class ComparisonTabs : TabControl
         if (page.Tag is WorkbookView)
             TextRenderer.DrawText(e.Graphics, "×", Font, close, Theme.Ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        SetHoveredClose(CloseAt(e.Location));
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        SetHoveredClose(null);
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnControlRemoved(ControlEventArgs e)
+    {
+        if (e.Control == hoveredClose) SetHoveredClose(null);
+        base.OnControlRemoved(e);
+    }
+
+    private void SetHoveredClose(TabPage? page)
+    {
+        if (page == hoveredClose) return;
+        hoveredClose = page;
+        Cursor = page is null ? Cursors.Default : Cursors.Hand;
     }
 
     protected override void WndProc(ref Message message)
