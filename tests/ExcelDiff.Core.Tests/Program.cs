@@ -31,6 +31,7 @@ try
         { LeftAddress: "D1:F1", RightAddress: "D1:E1", Parts.Count: 1 }, "結合範囲の変更を1件にまとめる");
     CheckMergedCells(left.Sheets[0]);
     CheckAxisChanges(scratch.FullName);
+    CheckXmlDiff();
     Check(keyed.Differences.Any(d => d is { Kind: ChangeKind.RowLayout, Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
     Check(WorkbookComparer.Compare(left, right, 6).Single() is { UsesKey: false, KeyWarning: not null }, "空のキー列はセル番地比較に戻す");
 
@@ -71,7 +72,7 @@ try
         foreach (var name in new[] { "sample.xlsx", "equivalent.xlsx", "right.xlsx" })
             File.Copy(Path.Combine(after, name), Path.Combine(output, "after", name), overwrite: true);
     }
-    Console.WriteLine("Excel-diff: 30 checks passed.");
+    Console.WriteLine("Excel-diff: 36 checks passed.");
 }
 finally
 {
@@ -128,6 +129,35 @@ static void CheckMergedCells(Sheet template)
     Check(unmergedChanges.Count(d => d.Kind == ChangeKind.Merge) == 1 &&
         unmergedChanges.Any(d => d.Kind == ChangeKind.Value && d.RightAddress == "C2" && d.Right == "独立した値"),
         "結合解除後の独立したセル値も検出する");
+}
+
+static void CheckXmlDiff()
+{
+    var before = System.Xml.Linq.XDocument.Parse("<sheet><a>1</a><b>2</b><c>3</c></sheet>");
+    var after = System.Xml.Linq.XDocument.Parse("<sheet><a>1</a><b>4</b><new/><c>3</c></sheet>");
+    var diff = XmlLineDiff.Compare(before, after);
+    var lines = diff.Lines;
+    Check(lines[2] is { Kind: XmlLineKind.Removed, Before: 3, After: null } &&
+        lines[3] is { Kind: XmlLineKind.Added, Before: null, After: 3 }, "XMLの削除・追加と両側の行番号を表示する");
+    Check(lines[5] is { Kind: XmlLineKind.Context, Before: 4, After: 5 }, "挿入後も共通行を揃える");
+    Check(XmlLineDiff.Compare(before, before).Lines.All(line => line.Kind == XmlLineKind.Context), "同じXMLには差分がない");
+    Check(XmlLineDiff.Compare(null, after).Lines.All(line => line.Kind == XmlLineKind.Added), "片側のみのXMLを表示する");
+    var manyBefore = new System.Xml.Linq.XDocument(new System.Xml.Linq.XElement("sheet",
+        Enumerable.Range(1, 3000).Select(i => new System.Xml.Linq.XElement("row", i))));
+    var manyAfter = new System.Xml.Linq.XDocument(manyBefore);
+    manyAfter.Root!.FirstNode!.Remove();
+    manyAfter.Root!.Add(new System.Xml.Linq.XElement("row", 3001));
+    var large = XmlLineDiff.Compare(manyBefore, manyAfter);
+    Check(!large.HasUnalignedBlocks && large.Lines.Count(line => line.Kind != XmlLineKind.Context) == 2,
+        "大きいXMLでも共通行を揃える");
+    using var cancel = new CancellationTokenSource();
+    cancel.Cancel();
+    try
+    {
+        XmlLineDiff.Compare(before, after, cancel.Token);
+        Check(false, "キャンセル済みのXML比較を中止する");
+    }
+    catch (OperationCanceledException) { }
 }
 
 static void CheckAxisChanges(string root)

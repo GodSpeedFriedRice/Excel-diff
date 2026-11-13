@@ -26,9 +26,9 @@ internal sealed class SheetPreview : Control
         AccessibleName = "選択した差分の周辺";
     }
 
-    internal void ShowArea(Sheet? source, int row, int column, MergeRange? selected, bool mark, bool savedZoom, bool use1904)
+    internal void ShowArea(Sheet? source, int row, int column, MergeRange? selected, bool mark, bool savedZoom, bool use1904, double viewScale = 1)
     {
-        var scale = savedZoom ? Math.Clamp(Number(source, "表示倍率", 100), 25, 400) / 100 : 1;
+        var scale = (savedZoom ? Math.Clamp(Number(source, "表示倍率", 100), 25, 400) / 100 : 1) * viewScale;
         if (ReferenceEquals(sheet, source) && focusRow == row && focusColumn == column && highlight == mark &&
             zoom == scale && date1904 == use1904 && cells.Count > 0) return;
 

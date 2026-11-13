@@ -30,15 +30,23 @@ internal static class Appearance
         WrapContents = false, Padding = new Padding(6, 3, 6, 3), FlowDirection = direction, BackColor = Panel
     };
 
-    internal static DataGridView Grid()
+    internal static DataGridView Grid() => ConfigureGrid(new DataGridView());
+
+    internal static T ConfigureGrid<T>(T grid) where T : DataGridView
     {
-        var grid = new DataGridView
-        {
-            Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
-            AllowUserToResizeRows = false, MultiSelect = false, RowHeadersVisible = false, BackgroundColor = Color.White,
-            BorderStyle = BorderStyle.None, GridColor = Line, EnableHeadersVisualStyles = false,
-            ColumnHeadersHeight = 30, ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing
-        };
+        grid.Dock = DockStyle.Fill;
+        grid.ReadOnly = true;
+        grid.AllowUserToAddRows = false;
+        grid.AllowUserToDeleteRows = false;
+        grid.AllowUserToResizeRows = false;
+        grid.MultiSelect = false;
+        grid.RowHeadersVisible = false;
+        grid.BackgroundColor = Color.White;
+        grid.BorderStyle = BorderStyle.None;
+        grid.GridColor = Line;
+        grid.EnableHeadersVisualStyles = false;
+        grid.ColumnHeadersHeight = 30;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         grid.RowTemplate.Height = 28;
         grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Panel, ForeColor = Muted };
         grid.DefaultCellStyle = new DataGridViewCellStyle

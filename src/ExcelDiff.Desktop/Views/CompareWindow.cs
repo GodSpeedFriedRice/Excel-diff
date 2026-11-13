@@ -103,7 +103,7 @@ internal sealed class CompareWindow : Form
     private async Task Choose()
     {
         if (busy) return;
-        using var dialog = new TargetDialog(targets);
+        using var dialog = new TargetDialog(targets ?? RecentTargets.Load());
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Selection is not Targets next) return;
         if (next.Folders) await LoadFolder(next, newSelection: true);
         else await LoadBook(next.Left, next.Right, next);
@@ -124,7 +124,11 @@ internal sealed class CompareWindow : Form
     {
         await Run(() => FolderComparer.Compare(current.Left, current.Right, current.Recursive, closing.Token), rows =>
         {
-            if (newSelection) ClearTabs();
+            if (newSelection)
+            {
+                ClearTabs();
+                RecentTargets.Save(current);
+            }
             targets = current;
             results = rows;
             if (!tabs.TabPages.Contains(folderTab)) tabs.TabPages.Add(folderTab);
@@ -148,6 +152,7 @@ internal sealed class CompareWindow : Form
             {
                 ClearTabs();
                 targets = newSelection;
+                RecentTargets.Save(newSelection);
             }
             if (replace?.IsDisposed == true) return;
             replace?.Dispose();
