@@ -16,6 +16,7 @@ internal sealed class FullSheetPane : UserControl
     private TileSession? session;
     private Sheet? source;
     private bool savedZoom;
+    private bool showGridlines = true;
     private double scale = 1;
     private bool date1904;
     private bool moving;
@@ -59,6 +60,15 @@ internal sealed class FullSheetPane : UserControl
         scale = zoom;
         RefreshVisible();
     }
+
+    internal void SetGridlines(bool visible)
+    {
+        if (showGridlines == visible) return;
+        showGridlines = visible;
+        if (source is null) return;
+        ResetSession();
+        RefreshVisible();
+    }
     internal event Action<CellPick>? Picked;
 
     internal void SetChanges(IReadOnlyList<Difference>? differences, bool before)
@@ -74,11 +84,10 @@ internal sealed class FullSheetPane : UserControl
     {
         if (!ReferenceEquals(source, sheet) || savedZoom != useSavedZoom || date1904 != use1904)
         {
-            ReleaseSession();
             source = sheet;
             savedZoom = useSavedZoom;
             date1904 = use1904;
-            if (sheet is not null) session = new TileSession(new SheetRaster(sheet, Font, savedZoom, date1904));
+            ResetSession();
             moving = true;
             vertical.Maximum = (session?.Raster.LastRow ?? 1) + vertical.LargeChange - 1;
             horizontal.Maximum = (session?.Raster.LastColumn ?? 1) + horizontal.LargeChange - 1;
@@ -400,6 +409,13 @@ internal sealed class FullSheetPane : UserControl
         if (right <= left || bottom <= top) return;
         using var pen = new Pen(Appearance.Blue);
         graphics.DrawRectangle(pen, left, top, right - left - 1, bottom - top - 1);
+    }
+
+    private void ResetSession()
+    {
+        ReleaseSession();
+        if (source is not null)
+            session = new TileSession(new SheetRaster(source, Font, savedZoom, date1904, showGridlines));
     }
 
     private void ReleaseSession()

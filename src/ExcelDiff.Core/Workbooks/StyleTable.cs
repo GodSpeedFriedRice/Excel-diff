@@ -4,6 +4,17 @@ namespace ExcelDiff.Core.Workbooks;
 
 internal sealed class StyleTable
 {
+    private static readonly string[] DefaultIndexedColors =
+    [
+        "000000", "FFFFFF", "FF0000", "00FF00", "0000FF", "FFFF00", "FF00FF", "00FFFF",
+        "000000", "FFFFFF", "FF0000", "00FF00", "0000FF", "FFFF00", "FF00FF", "00FFFF",
+        "800000", "008000", "000080", "808000", "800080", "008080", "C0C0C0", "808080",
+        "9999FF", "993366", "FFFFCC", "CCFFFF", "660066", "FF8080", "0066CC", "CCCCFF",
+        "000080", "FF00FF", "FFFF00", "00FFFF", "800080", "800000", "008080", "0000FF",
+        "00CCFF", "CCFFFF", "CCFFCC", "FFFF99", "99CCFF", "FF99CC", "CC99FF", "FFCC99",
+        "3366FF", "33CCCC", "99CC00", "FFCC00", "FF9900", "FF6600", "666699", "969696",
+        "003366", "339966", "003300", "333300", "993300", "993366", "333399", "333333"
+    ];
     private readonly IReadOnlyDictionary<string, string>[] formats;
 
     public StyleTable(XDocument? styles, XDocument? theme)
@@ -34,9 +45,15 @@ internal sealed class StyleTable
                 var entry = palette?.Elements().FirstOrDefault(c => c.Name.LocalName == themeOrder[i])?.Elements().FirstOrDefault();
                 var value = (string?)entry?.Attribute("lastClr") ?? (string?)entry?.Attribute("val");
                 if (value is not null) return "FF" + value.ToUpperInvariant();
+                if (i is 0 or 1) return i == 0 ? "FFFFFFFF" : "FF000000";
             }
-            if ((int?)e.Attribute("indexed") is int j && j >= 0 && j < indexed.Length)
-                return ((string?)indexed[j].Attribute("rgb"))?.ToUpperInvariant();
+            if ((int?)e.Attribute("indexed") is int j && j >= 0)
+            {
+                if (j is 64 or 65) return j == 64 ? "FF000000" : "FFFFFFFF";
+                if (j < indexed.Length && (string?)indexed[j].Attribute("rgb") is string custom)
+                    return "FF" + custom[^Math.Min(6, custom.Length)..].ToUpperInvariant();
+                if (j < DefaultIndexedColors.Length) return "FF" + DefaultIndexedColors[j];
+            }
             return null;
         }
 

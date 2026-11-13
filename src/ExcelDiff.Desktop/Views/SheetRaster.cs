@@ -14,14 +14,17 @@ internal sealed class SheetRaster : IDisposable
     private readonly Font defaultFont;
     private readonly double zoom;
     private readonly bool date1904;
+    private readonly bool showGridlines;
     private readonly Dictionary<(string Name, float Size, FontStyle Style), Font> fonts = [];
     private readonly Dictionary<int, int[]> occupiedRows = [];
+    private readonly PreviewStyles styles = new();
 
-    internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904)
+    internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904, bool showGridlines)
     {
         this.sheet = sheet;
         this.defaultFont = (Font)defaultFont.Clone();
         this.date1904 = date1904;
+        this.showGridlines = showGridlines;
         zoom = savedZoom && double.TryParse(sheet.Settings.GetValueOrDefault("表示倍率"),
             CultureInfo.InvariantCulture, out var percent) && double.IsFinite(percent) ? Math.Clamp(percent, 25, 400) / 100 : 1;
         Rows = new PreviewAxis(sheet, rows: true, zoom);
@@ -62,25 +65,25 @@ internal sealed class SheetRaster : IDisposable
             var lastRow = Math.Min(LastRow, Rows.AtPixel(originY + TileSize - 1));
             var columns = Columns.Visible(firstColumn, lastColumn, int.MaxValue);
             var rows = Rows.Visible(firstRow, lastRow, int.MaxValue);
-            var renderedMerges = new HashSet<MergeRange>();
+            var renderedMerges = new Dictionary<MergeRange, PreviewStyle>();
             var text = new List<PreviewCell>();
+            var borders = new List<PreviewBorder>();
+            var tileBounds = new Rectangle(0, 0, TileSize, TileSize);
 
             int X(int column) => (int)Math.Clamp(Columns.Position(column) - originX, -1000000, 1000000);
             int Y(int row) => (int)Math.Clamp(Rows.Position(row) - originY, -1000000, 1000000);
-            void Paint(Cell? cell, int row, int column, Rectangle bounds, Rectangle spill)
+            void Paint(Cell? cell, IReadOnlyDictionary<string, string> format, PreviewStyle style, Rectangle bounds, Rectangle spill)
             {
                 if (bounds.Width <= 0 || bounds.Height <= 0) return;
-                var format = cell?.Format ?? sheet.InheritedFormat(row, column);
-                var fill = format.GetValueOrDefault("背景/patternFill/patternType") == "solid"
-                    ? SheetPreview.ReadColor(format, "背景/patternFill/fgColor/rgb", Color.White) : Color.White;
-                if (bounds.IntersectsWith(new Rectangle(0, 0, TileSize, TileSize)))
+                if (bounds.IntersectsWith(tileBounds))
                 {
-                    if (fill != Color.White)
+                    if (style.HasFill)
                     {
-                        brush.Color = fill;
+                        brush.Color = style.Background;
                         graphics.FillRectangle(brush, bounds);
                     }
-                    graphics.DrawRectangle(pen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+                    else if (showGridlines)
+                        graphics.DrawRectangle(pen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
                 }
                 var value = SheetPreview.Display(cell, date1904);
                 if (value.Length == 0) return;
@@ -96,7 +99,7 @@ internal sealed class SheetRaster : IDisposable
                     "top" => StringAlignment.Near, "center" => StringAlignment.Center, _ => StringAlignment.Far
                 };
                 text.Add(new PreviewCell(bounds, spill, value, GetFont(format),
-                    SheetPreview.ReadColor(format, "フォント/color/rgb", Appearance.Ink), fill, horizontal, vertical,
+                    style.Foreground, style.Background, horizontal, vertical,
                     format.GetValueOrDefault("配置/wrapText") == "1", format.GetValueOrDefault("配置/shrinkToFit") == "1"));
             }
 
@@ -112,11 +115,26 @@ internal sealed class SheetRaster : IDisposable
                     if (mergeIndex >= 0)
                     {
                         var range = merges[mergeIndex];
-                        if (renderedMerges.Add(range))
+                        if (!renderedMerges.TryGetValue(range, out var anchorStyle))
                         {
+                            var anchor = sheet.At(range.FirstRow, range.FirstColumn);
+                            var format = anchor?.Format ?? sheet.InheritedFormat(range.FirstRow, range.FirstColumn);
+                            renderedMerges.Add(range, anchorStyle = styles.Get(format));
                             var bounds = Rectangle.FromLTRB(X(range.FirstColumn), Y(range.FirstRow),
                                 X(range.LastColumn + 1), Y(range.LastRow + 1));
-                            Paint(sheet.At(range.FirstRow, range.FirstColumn), range.FirstRow, range.FirstColumn, bounds, bounds);
+                            Paint(anchor, format, anchorStyle, bounds, bounds);
+                            if ((anchorStyle.Sides & BorderSides.Diagonal) != 0)
+                                borders.Add(new PreviewBorder(bounds, anchorStyle, BorderSides.Diagonal));
+                        }
+                        var edges = PreviewStyle.MergeEdges(range, row, column);
+                        if (edges != BorderSides.None)
+                        {
+                            var style = styles.Get(rowCells?.GetValueOrDefault(column)?.Format ?? sheet.InheritedFormat(row, column));
+                            if (((style.Sides | anchorStyle.Sides) & edges) != 0)
+                            {
+                                var bounds = Rectangle.FromLTRB(X(column), Y(row), X(column + 1), Y(row + 1));
+                                borders.Add(new PreviewBorder(bounds, style, edges, anchorStyle));
+                            }
                         }
                         continue;
                     }
@@ -156,12 +174,18 @@ internal sealed class SheetRaster : IDisposable
                             spill = Rectangle.FromLTRB(X(start), spill.Top, spill.Right, spill.Bottom);
                         }
                     }
-                    if (!outside || spill.Right > 0 && spill.Left < TileSize)
-                        Paint(cell, row, column, bounds, spill);
+                    if (outside && (spill.Right <= 0 || spill.Left >= TileSize)) return;
+                    var format = cell?.Format ?? sheet.InheritedFormat(row, column);
+                    var style = styles.Get(format);
+                    Paint(cell, format, style, bounds, spill);
+                    if (!outside && style.Sides != BorderSides.None)
+                        borders.Add(new PreviewBorder(bounds, style, style.Sides));
                 }
             }
             foreach (var cell in text)
                 SheetPreview.PaintText(graphics, cell, brush);
+            foreach (var border in borders)
+                if (border.Bounds.IntersectsWith(tileBounds)) border.Draw(graphics, pen);
             return bitmap;
         }
         catch

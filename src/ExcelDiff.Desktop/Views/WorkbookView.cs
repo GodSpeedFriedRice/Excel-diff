@@ -11,6 +11,7 @@ internal sealed class WorkbookView : UserControl
     private readonly ComboBox sheetPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 168, AccessibleName = "シート" };
     private readonly TextBox key = new() { Width = 44, MaxLength = 3, CharacterCasing = CharacterCasing.Upper, AccessibleName = "キー列" };
     private readonly CheckBox savedZoom = new() { Text = "保存倍率", AutoSize = true };
+    private readonly CheckBox showGridlines = new() { Text = "グリッド線を表示", AutoSize = true, Checked = true };
     private readonly CheckBox showPreview = new() { Text = "周辺を表示", AutoSize = true, Checked = true };
     private readonly Label position = Appearance.Label("");
     private readonly Label warning = Appearance.Label("");
@@ -63,9 +64,9 @@ internal sealed class WorkbookView : UserControl
 
         var layout = Appearance.Stack();
         var toolbar = Appearance.Toolbar();
-        toolbar.Controls.AddRange([sheetPicker, showPreview, savedZoom,
+        toolbar.Controls.AddRange([sheetPicker, showPreview, savedZoom, showGridlines,
             Appearance.Button("↑ 前へ", () => MoveDifference(-1)), position, Appearance.Button("次へ ↓", () => MoveDifference(1)), zoomIndicator]);
-        foreach (var control in new Control[] { sheetPicker, showPreview, savedZoom }) control.Margin = new Padding(6, 8, 6, 4);
+        foreach (var control in new Control[] { sheetPicker, showPreview, savedZoom, showGridlines }) control.Margin = new Padding(6, 8, 6, 4);
         Appearance.Row(layout, toolbar);
 
         var keyBar = Appearance.Toolbar();
@@ -132,20 +133,35 @@ internal sealed class WorkbookView : UserControl
             previews.Visible = showPreview.Checked;
             listLayout.RowStyles[2].SizeType = showPreview.Checked ? SizeType.Percent : SizeType.Absolute;
             listLayout.RowStyles[2].Height = showPreview.Checked ? 44 : 0;
-            savedZoom.Enabled = views.SelectedTab == full || showPreview.Checked;
+            UpdatePreviewOptions();
             UpdateSelection();
         };
         savedZoom.CheckedChanged += (_, _) => UpdateSelection();
+        showGridlines.CheckedChanged += (_, _) =>
+        {
+            var visible = showGridlines.Checked;
+            leftPreview.SetGridlines(visible);
+            rightPreview.SetGridlines(visible);
+            leftFull.SetGridlines(visible);
+            rightFull.SetGridlines(visible);
+        };
         views.SelectedIndexChanged += (_, _) =>
         {
             showPreview.Visible = views.SelectedTab == list;
             UpdateZoomIndicator();
-            savedZoom.Enabled = views.SelectedTab == full || (views.SelectedTab == list && showPreview.Checked);
+            UpdatePreviewOptions();
             UpdateSelection();
             if (views.SelectedTab == full) leftFull.FocusSurface();
             else if (views.SelectedTab == list) differences.Focus();
         };
         LoadPicker(0);
+    }
+
+    private void UpdatePreviewOptions()
+    {
+        var hasPreview = views.SelectedTab == full || (views.SelectedTab == list && showPreview.Checked);
+        savedZoom.Enabled = hasPreview;
+        showGridlines.Enabled = hasPreview;
     }
 
     private void ZoomList(int delta)

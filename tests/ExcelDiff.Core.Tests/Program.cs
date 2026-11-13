@@ -54,9 +54,17 @@ try
         ["right.xlsx"] = FileStatus.RightOnly, ["broken.xlsx"] = FileStatus.Unreadable,
         ["equivalent.xlsx"] = FileStatus.Same
     };
-    var results = FolderComparer.Compare(rootLeft, rootRight, recursive: true);
+    File.Copy(a, Path.Combine(before, "~$ignored.xlsx"));
+    File.WriteAllText(Path.Combine(after, "ignored.txt"), "");
+    var progress = new List<FolderComparisonProgress>();
+    var results = FolderComparer.Compare(rootLeft, rootRight, recursive: true, CancellationToken.None, progress.Add);
     Check(results.Count == expected.Count && results.All(r => expected[Path.GetFileName(r.RelativePath)] == r.Status), "フォルダ一覧の全状態を判定する");
     Check(FolderComparer.Compare(rootLeft, rootRight, recursive: false).Count == 0, "サブフォルダの設定を反映する");
+    Check(progress.SequenceEqual(Enumerable.Range(0, expected.Count + 1).Select(count => new FolderComparisonProgress(count, expected.Count))),
+        "左右共通のファイルは1件とし、片側のみと比較不可のファイルを含む進捗を通知する");
+    progress.Clear();
+    FolderComparer.Compare(rootLeft, rootRight, recursive: false, CancellationToken.None, progress.Add);
+    Check(progress.SequenceEqual([new FolderComparisonProgress(0, 0)]), "比較対象がない場合も総件数を通知する");
     Check(results.Single(r => Path.GetFileName(r.RelativePath) == "equivalent.xlsx").Sheets.Single() is
         { Name: "Sheet1", Status: FileStatus.Same, DifferenceCount: 0 }, "格納形式だけが違うファイルのシートを同一と表示する");
     Check(results.Single(r => Path.GetFileName(r.RelativePath) == "sample.xlsx").Sheets.Single() is
@@ -72,7 +80,7 @@ try
         foreach (var name in new[] { "sample.xlsx", "equivalent.xlsx", "right.xlsx" })
             File.Copy(Path.Combine(after, name), Path.Combine(output, "after", name), overwrite: true);
     }
-    Console.WriteLine("Excel-diff: 36 checks passed.");
+    Console.WriteLine("Excel-diff: 38 checks passed.");
 }
 finally
 {

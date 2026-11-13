@@ -13,6 +13,10 @@ internal sealed class CompareWindow : Form
     private readonly Label leftPath = Appearance.Label("");
     private readonly Label rightPath = Appearance.Label("");
     private readonly ToolStripStatusLabel status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly ToolStripProgressBar progressBar = new()
+    {
+        AutoSize = false, Width = 150, Visible = false, AccessibleName = "比較の進捗"
+    };
     private readonly CancellationTokenSource closing = new();
     private Targets? targets;
     private IReadOnlyList<FilePair> results = [];
@@ -61,7 +65,7 @@ internal sealed class CompareWindow : Form
         Appearance.Row(layout, commandRow);
         Appearance.Row(layout, tabs, fill: true);
         var bar = new StatusStrip { BackColor = Appearance.Panel, Dock = DockStyle.Fill, SizingGrip = false };
-        bar.Items.Add(status);
+        bar.Items.AddRange([progressBar, status]);
         Appearance.Row(layout, bar);
         Controls.Add(layout);
 
@@ -122,7 +126,9 @@ internal sealed class CompareWindow : Form
 
     private async Task LoadFolder(Targets current, bool newSelection)
     {
-        await Run(() => FolderComparer.Compare(current.Left, current.Right, current.Recursive, closing.Token), rows =>
+        FolderComparisonProgress? progress = null;
+        await Run(() => FolderComparer.Compare(current.Left, current.Right, current.Recursive, closing.Token,
+            update => Volatile.Write(ref progress, update)), rows =>
         {
             if (newSelection)
             {
@@ -136,7 +142,7 @@ internal sealed class CompareWindow : Form
             rightPath.Text = $"右  {current.Right}";
             tabs.SelectedTab = folderTab;
             RenderFiles();
-        });
+        }, () => Volatile.Read(ref progress));
     }
 
     private async Task LoadBook(string left, string right, Targets? newSelection, TabPage? replace = null, string? sheet = null)
@@ -188,13 +194,22 @@ internal sealed class CompareWindow : Form
         await LoadBook(a.FullName, b.FullName, null, sheet: selected.Sheet?.Name);
     }
 
-    private async Task Run<T>(Func<T> operation, Action<T> completed)
+    private async Task Run<T>(Func<T> operation, Action<T> completed, Func<FolderComparisonProgress?>? folderProgress = null)
     {
         if (busy) return;
         busy = true;
         UseWaitCursor = true;
         showSheets.Enabled = false;
         status.Text = "比較しています…";
+        using var progressTimer = folderProgress is null ? null : new System.Windows.Forms.Timer { Interval = 100 };
+        if (progressTimer is not null)
+        {
+            status.Text = "比較対象ファイルを確認しています…";
+            progressBar.Style = ProgressBarStyle.Marquee;
+            progressBar.Visible = true;
+            progressTimer.Tick += (_, _) => ShowProgress(folderProgress!());
+            progressTimer.Start();
+        }
         try
         {
             var result = await Task.Run(operation, closing.Token);
@@ -207,13 +222,24 @@ internal sealed class CompareWindow : Form
         }
         finally
         {
+            progressTimer?.Stop();
             busy = false;
             if (!IsDisposed)
             {
+                progressBar.Visible = false;
                 UseWaitCursor = false;
                 UpdateStatus();
             }
         }
+    }
+
+    private void ShowProgress(FolderComparisonProgress? progress)
+    {
+        if (progress is null) return;
+        var percent = progress.Total == 0 ? 0 : (int)(100L * progress.Completed / progress.Total);
+        progressBar.Style = ProgressBarStyle.Continuous;
+        progressBar.Value = percent;
+        status.Text = $"比較中  {progress.Completed:N0} / {progress.Total:N0} 件（{percent}%）";
     }
 
     private sealed record FolderRow(FilePair Pair, SheetSummary? Sheet = null);

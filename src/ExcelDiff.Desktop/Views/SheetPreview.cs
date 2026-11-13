@@ -9,15 +9,18 @@ internal sealed class SheetPreview : Control
     private const int HeaderWidth = 50;
     private const int HeaderHeight = 24;
     private readonly Dictionary<(string Name, float Size, FontStyle Style), Font> fonts = [];
+    private readonly PreviewStyles styles = new();
     private (string Name, Rectangle Bounds)[] columns = [];
     private (string Name, Rectangle Bounds)[] rows = [];
     private List<PreviewCell> cells = [];
+    private List<PreviewBorder> borders = [];
     private Sheet? sheet;
     private double zoom;
     private int focusRow;
     private int focusColumn;
     private bool highlight;
     private bool date1904;
+    private bool showGridlines = true;
 
     internal SheetPreview()
     {
@@ -26,12 +29,20 @@ internal sealed class SheetPreview : Control
         AccessibleName = "選択した差分の周辺";
     }
 
+    internal void SetGridlines(bool visible)
+    {
+        if (showGridlines == visible) return;
+        showGridlines = visible;
+        Invalidate();
+    }
+
     internal void ShowArea(Sheet? source, int row, int column, MergeRange? selected, bool mark, bool savedZoom, bool use1904, double viewScale = 1)
     {
         var scale = (savedZoom ? Math.Clamp(Number(source, "表示倍率", 100), 25, 400) / 100 : 1) * viewScale;
         if (ReferenceEquals(sheet, source) && focusRow == row && focusColumn == column && highlight == mark &&
             zoom == scale && date1904 == use1904 && cells.Count > 0) return;
 
+        if (!ReferenceEquals(sheet, source)) styles.Clear();
         if (!ReferenceEquals(sheet, source) || zoom != scale) ClearFonts();
         sheet = source;
         zoom = scale;
@@ -44,6 +55,7 @@ internal sealed class SheetPreview : Control
             columns = [];
             rows = [];
             cells = [];
+            borders = [];
             Size = new Size(240, 40);
             Invalidate();
             return;
@@ -88,6 +100,8 @@ internal sealed class SheetPreview : Control
         }
 
         cells = [];
+        borders = [];
+        var mergeStyles = new Dictionary<MergeRange, PreviewStyle>();
         for (var r = firstRow; r <= lastRow; r++)
         {
             var ri = r - firstRow;
@@ -98,9 +112,23 @@ internal sealed class SheetPreview : Control
             for (var c = firstColumn; c <= lastColumn; c++)
             {
                 var ci = c - firstColumn;
-                if (merged[ri, ci] is not null || x[ci] == x[ci + 1] || y[ri] == y[ri + 1]) continue;
+                if (x[ci] == x[ci + 1] || y[ri] == y[ri + 1]) continue;
                 var bounds = Rectangle.FromLTRB(x[ci], y[ri], x[ci + 1], y[ri + 1]);
                 var cell = rowCells?.GetValueOrDefault(c);
+                var format = cell?.Format ?? source.InheritedFormat(r, c);
+                var style = styles.Get(format);
+                if (merged[ri, ci] is MergeRange range)
+                {
+                    var edges = PreviewStyle.MergeEdges(range, r, c);
+                    if (edges == BorderSides.None) continue;
+                    if (!mergeStyles.TryGetValue(range, out var anchorStyle))
+                        mergeStyles.Add(range, anchorStyle = styles.Get(source.At(range.FirstRow, range.FirstColumn)?.Format ??
+                            source.InheritedFormat(range.FirstRow, range.FirstColumn)));
+                    if (((style.Sides | anchorStyle.Sides) & edges) != 0)
+                        borders.Add(new PreviewBorder(bounds, style, edges, anchorStyle));
+                    continue;
+                }
+                if (style.Sides != BorderSides.None) borders.Add(new PreviewBorder(bounds, style, style.Sides));
                 var spill = bounds;
                 if (cell is { Kind: "text", Value.Length: > 0 } &&
                     cell.Format.GetValueOrDefault("配置/wrapText") != "1" &&
@@ -121,7 +149,7 @@ internal sealed class SheetPreview : Control
                         spill = Rectangle.FromLTRB(x[start - firstColumn], spill.Top, spill.Right, spill.Bottom);
                     }
                 }
-                cells.Add(CreateCell(cell, bounds, spill, mark && row == r && column == c));
+                cells.Add(CreateCell(cell, format, style, bounds, spill, mark && row == r && column == c));
             }
         }
         foreach (var range in visibleMerges)
@@ -133,8 +161,14 @@ internal sealed class SheetPreview : Control
             if (bounds.Width == 0 || bounds.Height == 0) continue;
             // A merged cell uses the combined width of its columns and clips at the range boundary.
             var anchor = source.At(range.FirstRow, range.FirstColumn);
+            var format = anchor?.Format ?? source.InheritedFormat(range.FirstRow, range.FirstColumn);
+            var style = styles.Get(format);
             var marked = mark && row >= range.FirstRow && row <= range.LastRow && range.ContainsColumn(column);
-            cells.Add(CreateCell(anchor, bounds, bounds, marked));
+            if ((style.Sides & BorderSides.Diagonal) != 0 &&
+                range.FirstColumn >= firstColumn && range.LastColumn <= lastColumn &&
+                range.FirstRow >= firstRow && range.LastRow <= lastRow)
+                borders.Add(new PreviewBorder(bounds, style, BorderSides.Diagonal));
+            cells.Add(CreateCell(anchor, format, style, bounds, bounds, marked));
         }
         if (Parent is ScrollableControl viewport)
         {
@@ -147,28 +181,26 @@ internal sealed class SheetPreview : Control
         Invalidate();
     }
 
-    private PreviewCell CreateCell(Cell? cell, Rectangle bounds, Rectangle spill, bool selected)
+    private PreviewCell CreateCell(Cell? cell, IReadOnlyDictionary<string, string> format, PreviewStyle style,
+        Rectangle bounds, Rectangle spill, bool selected)
     {
-        var format = cell?.Format;
-        var alignment = format?.GetValueOrDefault("配置/horizontal") switch
+        var alignment = format.GetValueOrDefault("配置/horizontal") switch
         {
             "right" => StringAlignment.Far,
             "center" or "centerContinuous" => StringAlignment.Center,
             null or "general" when cell?.Kind == "n" => StringAlignment.Far,
             _ => StringAlignment.Near
         };
-        var vertical = format?.GetValueOrDefault("配置/vertical") switch
+        var vertical = format.GetValueOrDefault("配置/vertical") switch
         {
             "top" => StringAlignment.Near,
             "center" => StringAlignment.Center,
             _ => StringAlignment.Far
         };
-        var background = format?.GetValueOrDefault("背景/patternFill/patternType") == "solid"
-            ? ReadColor(format, "背景/patternFill/fgColor/rgb", Color.White) : Color.White;
         return new PreviewCell(bounds, spill, Display(cell, date1904),
-            cell is null ? Font : CellFont(cell), ReadColor(format, "フォント/color/rgb", Appearance.Ink),
-            selected ? Appearance.Changed : background, alignment, vertical,
-            format?.GetValueOrDefault("配置/wrapText") == "1", format?.GetValueOrDefault("配置/shrinkToFit") == "1");
+            cell is null ? Font : CellFont(cell), style.Foreground, style.Background, alignment, vertical,
+            format.GetValueOrDefault("配置/wrapText") == "1", format.GetValueOrDefault("配置/shrinkToFit") == "1",
+            style.HasFill, selected);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -195,16 +227,24 @@ internal sealed class SheetPreview : Control
         foreach (var cell in cells)
         {
             if (!cell.Bounds.IntersectsWith(e.ClipRectangle)) continue;
-            if (cell.Background != Color.White)
+            if (cell.HasFill)
             {
                 fill.Color = cell.Background;
                 graphics.FillRectangle(fill, cell.Bounds);
             }
-            graphics.DrawRectangle(line, cell.Bounds.X, cell.Bounds.Y, cell.Bounds.Width - 1, cell.Bounds.Height - 1);
+            else if (showGridlines)
+                graphics.DrawRectangle(line, cell.Bounds.X, cell.Bounds.Y, cell.Bounds.Width - 1, cell.Bounds.Height - 1);
         }
         foreach (var cell in cells)
             if (cell.Text.Length != 0 && cell.Spill.IntersectsWith(e.ClipRectangle))
                 PaintText(graphics, cell, fill);
+        using var borderPen = new Pen(Color.Black);
+        foreach (var border in borders)
+            if (border.Bounds.IntersectsWith(e.ClipRectangle)) border.Draw(graphics, borderPen);
+        using var selectionPen = new Pen(Appearance.Blue);
+        foreach (var cell in cells)
+            if (cell.Selected && cell.Bounds.IntersectsWith(e.ClipRectangle) && cell.Bounds.Width > 2 && cell.Bounds.Height > 2)
+                graphics.DrawRectangle(selectionPen, cell.Bounds.X + 1, cell.Bounds.Y + 1, cell.Bounds.Width - 3, cell.Bounds.Height - 3);
     }
 
     internal static void PaintText(Graphics graphics, PreviewCell cell, SolidBrush brush)
@@ -292,14 +332,6 @@ internal sealed class SheetPreview : Control
     private static bool IsHidden(Sheet sheet, string name) => sheet.Settings.GetValueOrDefault(name + " / hidden") == "1";
     private static int Pixels(double value) => (int)Math.Round(Math.Clamp(value, 0, 4096));
 
-    internal static Color ReadColor(IReadOnlyDictionary<string, string>? values, string key, Color fallback)
-    {
-        var hex = values?.GetValueOrDefault(key);
-        return hex is { Length: >= 6 } &&
-            int.TryParse(hex.AsSpan(hex.Length - 6), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb)
-            ? Color.FromArgb(unchecked((int)0xFF000000) | rgb) : fallback;
-    }
-
     internal static string Display(Cell? cell, bool date1904)
     {
         if (cell is null) return "";
@@ -340,5 +372,6 @@ internal sealed class SheetPreview : Control
     }
 
     internal sealed record PreviewCell(Rectangle Bounds, Rectangle Spill, string Text, Font Font,
-        Color Foreground, Color Background, StringAlignment Alignment, StringAlignment Vertical, bool Wrap, bool Shrink);
+        Color Foreground, Color Background, StringAlignment Alignment, StringAlignment Vertical, bool Wrap, bool Shrink,
+        bool HasFill = false, bool Selected = false);
 }
