@@ -10,9 +10,7 @@ internal sealed class WorkbookView : UserControl
     private IReadOnlyList<SheetDiff> sheets;
     private readonly ComboBox sheetPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 168, AccessibleName = "シート" };
     private readonly TextBox key = new() { Width = 44, MaxLength = 3, CharacterCasing = CharacterCasing.Upper, AccessibleName = "キー列" };
-    private readonly CheckBox savedZoom = new() { Text = "保存倍率", AutoSize = true };
-    private readonly CheckBox showGridlines = new() { Text = "グリッド線を表示", AutoSize = true, Checked = true };
-    private readonly CheckBox showPreview = new() { Text = "周辺を表示", AutoSize = true, Checked = true };
+    private PreviewOptions previewOptions = new();
     private readonly Label position = Appearance.Label("");
     private readonly Label warning = Appearance.Label("");
     private readonly DifferenceGrid differences = Appearance.ConfigureGrid(new DifferenceGrid());
@@ -64,9 +62,9 @@ internal sealed class WorkbookView : UserControl
 
         var layout = Appearance.Stack();
         var toolbar = Appearance.Toolbar();
-        toolbar.Controls.AddRange([sheetPicker, showPreview, savedZoom, showGridlines,
+        toolbar.Controls.AddRange([sheetPicker,
             Appearance.Button("↑ 前へ", () => MoveDifference(-1)), position, Appearance.Button("次へ ↓", () => MoveDifference(1)), zoomIndicator]);
-        foreach (var control in new Control[] { sheetPicker, showPreview, savedZoom, showGridlines }) control.Margin = new Padding(6, 8, 6, 4);
+        sheetPicker.Margin = new Padding(6, 8, 6, 4);
         Appearance.Row(layout, toolbar);
 
         var keyBar = Appearance.Toolbar();
@@ -128,28 +126,9 @@ internal sealed class WorkbookView : UserControl
         Controls.Add(layout);
 
         sheetPicker.SelectedIndexChanged += (_, _) => { if (!updating) ShowSheet(); };
-        showPreview.CheckedChanged += (_, _) =>
-        {
-            previews.Visible = showPreview.Checked;
-            listLayout.RowStyles[2].SizeType = showPreview.Checked ? SizeType.Percent : SizeType.Absolute;
-            listLayout.RowStyles[2].Height = showPreview.Checked ? 44 : 0;
-            UpdatePreviewOptions();
-            UpdateSelection();
-        };
-        savedZoom.CheckedChanged += (_, _) => UpdateSelection();
-        showGridlines.CheckedChanged += (_, _) =>
-        {
-            var visible = showGridlines.Checked;
-            leftPreview.SetGridlines(visible);
-            rightPreview.SetGridlines(visible);
-            leftFull.SetGridlines(visible);
-            rightFull.SetGridlines(visible);
-        };
         views.SelectedIndexChanged += (_, _) =>
         {
-            showPreview.Visible = views.SelectedTab == list;
             UpdateZoomIndicator();
-            UpdatePreviewOptions();
             UpdateSelection();
             if (views.SelectedTab == full) leftFull.FocusSurface();
             else if (views.SelectedTab == list) differences.Focus();
@@ -157,11 +136,26 @@ internal sealed class WorkbookView : UserControl
         LoadPicker(0);
     }
 
-    private void UpdatePreviewOptions()
+    internal void SetPreviewOptions(PreviewOptions options)
     {
-        var hasPreview = views.SelectedTab == full || (views.SelectedTab == list && showPreview.Checked);
-        savedZoom.Enabled = hasPreview;
-        showGridlines.Enabled = hasPreview;
+        var previous = previewOptions;
+        if (options == previous) return;
+        previewOptions = options;
+        if (options.ShowGridlines != previous.ShowGridlines)
+        {
+            leftPreview.SetGridlines(options.ShowGridlines);
+            rightPreview.SetGridlines(options.ShowGridlines);
+            leftFull.SetGridlines(options.ShowGridlines);
+            rightFull.SetGridlines(options.ShowGridlines);
+        }
+        if (options.ShowNearby != previous.ShowNearby)
+        {
+            previews.Visible = options.ShowNearby;
+            listLayout.RowStyles[2].SizeType = options.ShowNearby ? SizeType.Percent : SizeType.Absolute;
+            listLayout.RowStyles[2].Height = options.ShowNearby ? 44 : 0;
+        }
+        if (options.UseSavedZoom != previous.UseSavedZoom || views.SelectedTab == list && options.ShowNearby != previous.ShowNearby)
+            UpdateSelection(jumpToDifference: false);
     }
 
     private void ZoomList(int delta)
@@ -375,16 +369,16 @@ internal sealed class WorkbookView : UserControl
             var leftMark = diff?.LeftRow is not null || columnLayout;
             var rightMark = diff?.RightRow is not null || columnLayout;
             leftFull.ShowSheet(sheet?.Left, leftRow, column, diff?.LeftMerge, rowLayout, columnLayout,
-                savedZoom.Checked, left.Date1904, jump, leftMark, diff?.LayoutCount ?? 1);
+                previewOptions.UseSavedZoom, left.Date1904, jump, leftMark, diff?.LayoutCount ?? 1);
             rightFull.ShowSheet(sheet?.Right, rightRow, column, diff?.RightMerge, rowLayout, columnLayout,
-                savedZoom.Checked, right.Date1904, jump, rightMark, diff?.LayoutCount ?? 1);
+                previewOptions.UseSavedZoom, right.Date1904, jump, rightMark, diff?.LayoutCount ?? 1);
             return;
         }
-        if (!showPreview.Checked) return;
+        if (!previewOptions.ShowNearby) return;
         leftPreview.ShowArea(sheet?.Left, leftRow, column, diff?.LeftMerge, diff?.LeftRow is not null,
-            savedZoom.Checked, left.Date1904, listZoom.Scale);
+            previewOptions.UseSavedZoom, left.Date1904, listZoom.Scale);
         rightPreview.ShowArea(sheet?.Right, rightRow, column, diff?.RightMerge, diff?.RightRow is not null,
-            savedZoom.Checked, right.Date1904, listZoom.Scale);
+            previewOptions.UseSavedZoom, right.Date1904, listZoom.Scale);
     }
 
 

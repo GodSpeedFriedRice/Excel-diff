@@ -12,6 +12,9 @@ internal sealed class CompareWindow : Form
     private readonly CheckBox showSame = new() { Text = "同一ファイルを表示", AutoSize = true, Checked = true };
     private readonly Label leftPath = Appearance.Label("");
     private readonly Label rightPath = Appearance.Label("");
+    private readonly TextBox searchText = new() { Width = 240, PlaceholderText = "ファイル名・フォルダ名", AccessibleName = "ファイル名・フォルダ名を検索" };
+    private readonly FlowLayoutPanel searchBar = Appearance.Toolbar();
+    private readonly ToolStripMenuItem find = new("ファイル・フォルダを検索") { ShortcutKeys = Keys.Control | Keys.F, Enabled = false };
     private readonly ToolStripStatusLabel status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly ToolStripProgressBar progressBar = new()
     {
@@ -20,10 +23,17 @@ internal sealed class CompareWindow : Form
     private readonly CancellationTokenSource closing = new();
     private Targets? targets;
     private IReadOnlyList<FilePair> results = [];
+    private PreviewOptions previewOptions;
+    private int sortColumn = -1;
+    private SortOrder sortOrder = SortOrder.None;
+    private int visibleFileCount;
     private bool busy;
 
-    internal CompareWindow()
+    internal CompareWindow() : this(LocalSettings.PathFor("preview-settings.json")) { }
+
+    internal CompareWindow(string previewSettingsPath)
     {
+        previewOptions = LocalSettings.Load<PreviewOptions>(previewSettingsPath) ?? new();
         Text = "Excel Diff";
         ClientSize = new Size(1119, 629);
         MinimumSize = new Size(760, 470);
@@ -42,7 +52,13 @@ internal sealed class CompareWindow : Form
         file.DropDownItems.Add("終了", null, (_, _) => Close());
         var view = new ToolStripMenuItem("表示");
         view.DropDownItems.Add("フォルダ比較", null, (_, _) => { if (tabs.TabPages.Contains(folderTab)) tabs.SelectedTab = folderTab; });
-        menu.Items.AddRange([file, view]);
+        find.Click += (_, _) => OpenSearch();
+        view.DropDownItems.Add(find);
+        var settings = new ToolStripMenuItem("設定");
+        AddPreviewOption("周辺を表示", previewOptions.ShowNearby, (current, enabled) => current with { ShowNearby = enabled });
+        AddPreviewOption("保存倍率を使う", previewOptions.UseSavedZoom, (current, enabled) => current with { UseSavedZoom = enabled });
+        AddPreviewOption("グリッド線を表示", previewOptions.ShowGridlines, (current, enabled) => current with { ShowGridlines = enabled });
+        menu.Items.AddRange([file, view, settings]);
         MainMenuStrip = menu;
         Appearance.Row(layout, menu);
 
@@ -76,15 +92,41 @@ internal sealed class CompareWindow : Form
         paths.Controls.Add(leftPath, 0, 0);
         paths.Controls.Add(rightPath, 1, 0);
         Appearance.Row(folder, paths);
+        searchBar.Visible = false;
+        searchText.Margin = new Padding(6, 8, 4, 4);
+        searchBar.Controls.AddRange([searchText, Appearance.Button("検索を閉じる", CloseSearch)]);
+        var searchTimer = new System.Windows.Forms.Timer { Interval = 150 };
+        searchTimer.Tick += (_, _) =>
+        {
+            searchTimer.Stop();
+            RenderFiles();
+        };
+        searchText.TextChanged += (_, _) =>
+        {
+            searchTimer.Stop();
+            if (searchBar.Visible) searchTimer.Start();
+        };
+        Disposed += (_, _) => searchTimer.Dispose();
+        searchText.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Escape) return;
+            e.Handled = e.SuppressKeyPress = true;
+            CloseSearch();
+        };
+        Appearance.Row(folder, searchBar);
         Appearance.Row(folder, fileList, fill: true);
         folderTab.Controls.Add(folder);
         foreach (var (name, weight) in new[] { ("ファイル名", 22), ("フォルダ", 16), ("比較結果", 19),
             ("左更新日時", 17), ("右更新日時", 17), ("拡張子", 9) })
         {
             fileList.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = name, FillWeight = weight,
-                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, SortMode = DataGridViewColumnSortMode.NotSortable });
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, SortMode = DataGridViewColumnSortMode.Programmatic });
         }
         fileList.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        fileList.ColumnHeaderMouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left && e.ColumnIndex >= 0) SortFiles(e.ColumnIndex);
+        };
         fileList.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await OpenSelected(); };
         fileList.KeyDown += async (_, e) =>
         {
@@ -102,6 +144,36 @@ internal sealed class CompareWindow : Form
             if (targets is null && !IsDisposed) Close();
         };
         FormClosed += (_, _) => closing.Cancel();
+
+        void AddPreviewOption(string caption, bool value, Func<PreviewOptions, bool, PreviewOptions> change)
+        {
+            var item = new ToolStripMenuItem(caption) { Checked = value, CheckOnClick = true };
+            item.CheckedChanged += (_, _) =>
+            {
+                previewOptions = change(previewOptions, item.Checked);
+                foreach (TabPage page in tabs.TabPages)
+                    if (page.Tag is WorkbookView workbook) workbook.SetPreviewOptions(previewOptions);
+                LocalSettings.Save(previewSettingsPath, previewOptions);
+            };
+            settings.DropDownItems.Add(item);
+        }
+    }
+
+    private void OpenSearch()
+    {
+        if (!tabs.TabPages.Contains(folderTab)) return;
+        tabs.SelectedTab = folderTab;
+        searchBar.Visible = true;
+        searchText.Focus();
+        searchText.SelectAll();
+    }
+
+    private void CloseSearch()
+    {
+        searchBar.Visible = false;
+        searchText.Clear();
+        RenderFiles();
+        fileList.Focus();
     }
 
     private async Task Choose()
@@ -134,6 +206,8 @@ internal sealed class CompareWindow : Form
             {
                 ClearTabs();
                 RecentTargets.Save(current);
+                searchBar.Visible = false;
+                searchText.Clear();
             }
             targets = current;
             results = rows;
@@ -163,6 +237,7 @@ internal sealed class CompareWindow : Form
             if (replace?.IsDisposed == true) return;
             replace?.Dispose();
             var view = new WorkbookView(left, right, result.a, result.b, result.Diff) { Dock = DockStyle.Fill };
+            view.SetPreviewOptions(previewOptions);
             if (sheet is not null) view.SelectSheet(sheet);
             var title = Path.GetFileName(left);
             if (Path.GetFileName(right) != title) title += " ↔ " + Path.GetFileName(right);
@@ -244,17 +319,48 @@ internal sealed class CompareWindow : Form
 
     private sealed record FolderRow(FilePair Pair, SheetSummary? Sheet = null);
 
+    private void SortFiles(int column)
+    {
+        if (sortColumn >= 0) fileList.Columns[sortColumn].HeaderCell.SortGlyphDirection = SortOrder.None;
+        sortOrder = sortColumn == column && sortOrder == SortOrder.Ascending ? SortOrder.Descending : SortOrder.Ascending;
+        sortColumn = column;
+        fileList.Columns[column].HeaderCell.SortGlyphDirection = sortOrder;
+        RenderFiles();
+    }
+
+    private IEnumerable<FilePair> VisibleFiles(string query)
+    {
+        var pairs = results.Where(pair => (showSame.Checked || pair.Status != FileStatus.Same) &&
+            pair.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase));
+        var comparer = StringComparer.CurrentCultureIgnoreCase;
+        IOrderedEnumerable<FilePair> Order<TKey>(Func<FilePair, TKey> key, IComparer<TKey>? order = null) =>
+            sortOrder == SortOrder.Descending ? pairs.OrderByDescending(key, order) : pairs.OrderBy(key, order);
+
+        return sortColumn switch
+        {
+            0 => Order(pair => Path.GetFileName(pair.RelativePath), comparer),
+            1 => Order(pair => Path.GetDirectoryName(pair.RelativePath), comparer),
+            2 => Order(pair => StatusName(pair.Status), comparer),
+            3 => Order(pair => pair.Left?.LastWriteTimeUtc),
+            4 => Order(pair => pair.Right?.LastWriteTimeUtc),
+            5 => Order(pair => Path.GetExtension(pair.RelativePath), comparer),
+            _ => pairs
+        };
+    }
+
     private void RenderFiles()
     {
         var selected = fileList.CurrentRow?.Tag as FolderRow;
         DataGridViewCell? selection = null;
         fileList.Rows.Clear();
+        visibleFileCount = 0;
+        var query = searchText.Text.Trim().Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
         string? lastFolder = null;
-        foreach (var pair in results)
+        foreach (var pair in VisibleFiles(query))
         {
-            if (pair.Status == FileStatus.Same && !showSame.Checked) continue;
+            visibleFileCount++;
             var folder = Path.GetDirectoryName(pair.RelativePath);
-            if (!string.IsNullOrEmpty(folder) && folder != lastFolder)
+            if (sortColumn is -1 or 1 && !string.IsNullOrEmpty(folder) && folder != lastFolder)
             {
                 var header = fileList.Rows[fileList.Rows.Add(folder)];
                 header.DefaultCellStyle.BackColor = Appearance.Panel;
@@ -337,13 +443,15 @@ internal sealed class CompareWindow : Form
     private void UpdateStatus()
     {
         var folder = tabs.SelectedTab == folderTab;
+        find.Enabled = tabs.TabPages.Contains(folderTab);
         showSame.Enabled = folder;
         showSheets.Enabled = folder && !busy;
         if (busy) return;
         Text = folder ? "フォルダ比較 — Excel Diff" : "ファイル比較 — Excel Diff";
         var counts = results.ToLookup(r => r.Status);
+        var searchCount = string.IsNullOrWhiteSpace(searchText.Text) ? "" : $"検索結果 {visibleFileCount} / ";
         status.Text = folder
-            ? $"{results.Count} 件  ・  差分あり {counts[FileStatus.Different].Count()}  ・  同一 {counts[FileStatus.Same].Count()}" +
+            ? $"{searchCount}{results.Count} 件  ・  差分あり {counts[FileStatus.Different].Count()}  ・  同一 {counts[FileStatus.Same].Count()}" +
               $"  ・  左のみ {counts[FileStatus.LeftOnly].Count()}  ・  右のみ {counts[FileStatus.RightOnly].Count()}  ・  比較不可 {counts[FileStatus.Unreadable].Count()}"
             : (tabs.SelectedTab?.Tag as WorkbookView)?.Status ?? "";
     }
