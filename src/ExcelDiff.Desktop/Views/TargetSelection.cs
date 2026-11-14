@@ -2,7 +2,7 @@ namespace ExcelDiff.Desktop.Views;
 
 internal sealed record Targets(string Left, string Right, bool Folders, bool Recursive);
 
-internal sealed class TargetDialog : Form
+internal sealed class TargetSelection : UserControl
 {
     private readonly TextBox left = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 5, 8, 3), AccessibleName = "変更前のパス" };
     private readonly TextBox right = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 5, 8, 3), AccessibleName = "変更後のパス" };
@@ -10,17 +10,14 @@ internal sealed class TargetDialog : Form
     private readonly RadioButton files = new() { Text = "ファイル比較", Appearance = System.Windows.Forms.Appearance.Button, AutoSize = true };
     private readonly CheckBox recursive = new() { Text = "サブフォルダも比較する", Checked = true, AutoSize = true };
     private readonly Label error = Appearance.Label("");
-    internal Targets? Selection { get; private set; }
+    private readonly Button compare;
+    private readonly Func<Targets, Task> compareTargets;
 
-    internal TargetDialog(Targets? previous)
+    internal TargetSelection(Targets? previous, Func<Targets, Task> compareTargets)
     {
-        Text = "比較対象を選択 — Excel Diff";
+        this.compareTargets = compareTargets;
+        Dock = DockStyle.Fill;
         BackColor = Color.White;
-        StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(1119, 590);
-        MinimumSize = new Size(540, 420);
-        MinimizeBox = false;
-        MaximizeBox = false;
         var layout = Appearance.Stack();
         layout.Padding = new Padding(27, 21, 27, 14);
         var title = Appearance.Label("比較対象を選択");
@@ -37,30 +34,43 @@ internal sealed class TargetDialog : Form
         AddPath(layout, "右 ・ 変更後", right);
         recursive.Margin = new Padding(6, 8, 0, 0);
         Appearance.Row(layout, recursive);
-        folders.CheckedChanged += (_, _) => recursive.Visible = folders.Checked;
+        folders.CheckedChanged += (_, _) =>
+        {
+            recursive.Visible = folders.Checked;
+            ShowError("");
+        };
+        left.TextChanged += (_, _) => ShowError("");
+        right.TextChanged += (_, _) => ShowError("");
         error.ForeColor = Color.Firebrick;
         Appearance.Row(layout, error);
         Appearance.Row(layout, new Panel { Dock = DockStyle.Fill }, fill: true);
 
         var buttons = Appearance.Toolbar(FlowDirection.RightToLeft);
         buttons.BackColor = Color.White;
-        var compare = Appearance.Button("比較", Confirm, primary: true);
-        var cancel = Appearance.Button("キャンセル", Close);
-        cancel.DialogResult = DialogResult.Cancel;
-        buttons.Controls.AddRange([compare, cancel]);
+        compare = Appearance.Button("比較", async () => await Confirm(), primary: true);
+        buttons.Controls.Add(compare);
         Appearance.Row(layout, buttons);
-        AcceptButton = compare;
-        CancelButton = cancel;
-        var status = new StatusStrip { BackColor = Appearance.Panel, SizingGrip = false };
-        status.Items.Add("対象拡張子  .xlsx");
         Controls.Add(layout);
-        Controls.Add(status);
 
         if (previous is null) return;
         left.Text = previous.Left;
         right.Text = previous.Right;
         files.Checked = !previous.Folders;
         recursive.Checked = previous.Recursive;
+    }
+
+    internal void FocusPath() => left.Focus();
+
+    internal void ShowError(string message) => error.Text = message;
+
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        if (keyData == Keys.Enter && (left.Focused || right.Focused))
+        {
+            compare.PerformClick();
+            return true;
+        }
+        return base.ProcessCmdKey(ref message, keyData);
     }
 
     private void AddPath(TableLayoutPanel layout, string name, TextBox input)
@@ -89,7 +99,7 @@ internal sealed class TargetDialog : Form
         }
     }
 
-    private void Confirm()
+    private async Task Confirm()
     {
         var a = left.Text.Trim().Trim('"');
         var b = right.Text.Trim().Trim('"');
@@ -104,7 +114,15 @@ internal sealed class TargetDialog : Form
             return;
         }
 
-        Selection = new Targets(Path.GetFullPath(a), Path.GetFullPath(b), folders.Checked, recursive.Checked);
-        DialogResult = DialogResult.OK;
+        error.Text = "";
+        Enabled = false;
+        try
+        {
+            await compareTargets(new Targets(Path.GetFullPath(a), Path.GetFullPath(b), folders.Checked, recursive.Checked));
+        }
+        finally
+        {
+            if (!IsDisposed) Enabled = true;
+        }
     }
 }

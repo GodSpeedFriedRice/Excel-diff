@@ -21,7 +21,9 @@ internal sealed class CompareWindow : Form
         AutoSize = false, Width = 150, Visible = false, AccessibleName = "比較の進捗"
     };
     private readonly CancellationTokenSource closing = new();
+    private readonly string recentTargetsPath;
     private Targets? targets;
+    private TabPage? targetTab;
     private IReadOnlyList<FilePair> results = [];
     private PreviewOptions previewOptions;
     private int sortColumn = -1;
@@ -29,10 +31,11 @@ internal sealed class CompareWindow : Form
     private int visibleFileCount;
     private bool busy;
 
-    internal CompareWindow() : this(LocalSettings.PathFor("preview-settings.json")) { }
+    internal CompareWindow() : this(LocalSettings.PathFor("preview-settings.json"), RecentTargets.SettingsPath) { }
 
-    internal CompareWindow(string previewSettingsPath)
+    internal CompareWindow(string previewSettingsPath, string recentTargetsPath)
     {
+        this.recentTargetsPath = recentTargetsPath;
         previewOptions = LocalSettings.Load<PreviewOptions>(previewSettingsPath) ?? new();
         Text = "Excel Diff";
         ClientSize = new Size(1119, 629);
@@ -44,8 +47,8 @@ internal sealed class CompareWindow : Form
         var layout = Appearance.Stack();
         var menu = new MenuStrip { Dock = DockStyle.Fill, BackColor = Color.White };
         var file = new ToolStripMenuItem("ファイル");
-        file.DropDownItems.Add(new ToolStripMenuItem("開く…", null, async (_, _) => await Choose()) { ShortcutKeys = Keys.Control | Keys.O });
-        file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseDetail(tabs.SelectedTab))
+        file.DropDownItems.Add(new ToolStripMenuItem("開く…", null, (_, _) => Choose()) { ShortcutKeys = Keys.Control | Keys.O });
+        file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseTab(tabs.SelectedTab))
         {
             ShortcutKeys = Keys.Control | Keys.W
         });
@@ -63,7 +66,7 @@ internal sealed class CompareWindow : Form
         Appearance.Row(layout, menu);
 
         var toolbar = Appearance.Toolbar();
-        toolbar.Controls.Add(Appearance.Button("開く…", async () => await Choose()));
+        toolbar.Controls.Add(Appearance.Button("開く…", Choose, primary: true));
         toolbar.Controls.Add(Appearance.Button("再比較", async () => await Recompare()));
         toolbar.Controls.Add(Appearance.Button("↑ 前の差分", () => MoveFile(-1)));
         toolbar.Controls.Add(Appearance.Button("↓ 次の差分", () => MoveFile(1)));
@@ -137,13 +140,9 @@ internal sealed class CompareWindow : Form
         showSame.CheckedChanged += (_, _) => RenderFiles();
         showSheets.CheckedChanged += (_, _) => RenderFiles();
         tabs.SelectedIndexChanged += (_, _) => UpdateStatus();
-        tabs.CloseRequested += CloseDetail;
-        Shown += async (_, _) =>
-        {
-            await Choose();
-            if (targets is null && !IsDisposed) Close();
-        };
+        tabs.CloseRequested += CloseTab;
         FormClosed += (_, _) => closing.Cancel();
+        UpdateStatus();
 
         void AddPreviewOption(string caption, bool value, Func<PreviewOptions, bool, PreviewOptions> change)
         {
@@ -176,13 +175,30 @@ internal sealed class CompareWindow : Form
         fileList.Focus();
     }
 
-    private async Task Choose()
+    private void Choose()
     {
+        if (targetTab is not null)
+        {
+            tabs.SelectedTab = targetTab;
+            ((TargetSelection)targetTab.Tag!).FocusPath();
+            return;
+        }
         if (busy) return;
-        using var dialog = new TargetDialog(targets ?? RecentTargets.Load());
-        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Selection is not Targets next) return;
-        if (next.Folders) await LoadFolder(next, newSelection: true);
-        else await LoadBook(next.Left, next.Right, next);
+        var selection = new TargetSelection(targets ?? RecentTargets.Load(recentTargetsPath), CompareTargets);
+        targetTab = new TabPage("比較対象を選択") { Tag = selection };
+        targetTab.Controls.Add(selection);
+        tabs.TabPages.Add(targetTab);
+        tabs.SelectedTab = targetTab;
+        selection.FocusPath();
+        UpdateStatus();
+    }
+
+    private Task CompareTargets(Targets next)
+    {
+        if (busy || targetTab?.Tag is not TargetSelection selection) return Task.CompletedTask;
+        return next.Folders
+            ? LoadFolder(next, newSelection: true, showError: selection.ShowError)
+            : LoadBook(next.Left, next.Right, next, showError: selection.ShowError);
     }
 
     private async Task Recompare()
@@ -193,10 +209,10 @@ internal sealed class CompareWindow : Form
             await LoadBook(view.LeftPath, view.RightPath, null, tabs.SelectedTab, view.SelectedSheet);
             return;
         }
-        if (current.Folders) await LoadFolder(current, newSelection: false);
+        if (tabs.SelectedTab == folderTab && current.Folders) await LoadFolder(current, newSelection: false);
     }
 
-    private async Task LoadFolder(Targets current, bool newSelection)
+    private async Task LoadFolder(Targets current, bool newSelection, Action<string>? showError = null)
     {
         FolderComparisonProgress? progress = null;
         await Run(() => FolderComparer.Compare(current.Left, current.Right, current.Recursive, closing.Token,
@@ -205,7 +221,7 @@ internal sealed class CompareWindow : Form
             if (newSelection)
             {
                 ClearTabs();
-                RecentTargets.Save(current);
+                RecentTargets.Save(recentTargetsPath, current);
                 searchBar.Visible = false;
                 searchText.Clear();
             }
@@ -216,10 +232,11 @@ internal sealed class CompareWindow : Form
             rightPath.Text = $"右  {current.Right}";
             tabs.SelectedTab = folderTab;
             RenderFiles();
-        }, () => Volatile.Read(ref progress));
+        }, () => Volatile.Read(ref progress), showError);
     }
 
-    private async Task LoadBook(string left, string right, Targets? newSelection, TabPage? replace = null, string? sheet = null)
+    private async Task LoadBook(string left, string right, Targets? newSelection, TabPage? replace = null, string? sheet = null,
+        Action<string>? showError = null)
     {
         await Run(() =>
         {
@@ -232,7 +249,7 @@ internal sealed class CompareWindow : Form
             {
                 ClearTabs();
                 targets = newSelection;
-                RecentTargets.Save(newSelection);
+                RecentTargets.Save(recentTargetsPath, newSelection);
             }
             if (replace?.IsDisposed == true) return;
             replace?.Dispose();
@@ -246,7 +263,7 @@ internal sealed class CompareWindow : Form
             tabs.TabPages.Add(page);
             tabs.SelectedTab = page;
             view.StatusChanged += (_, _) => UpdateStatus();
-        });
+        }, showError: showError);
     }
 
     private async Task OpenSelected()
@@ -269,7 +286,8 @@ internal sealed class CompareWindow : Form
         await LoadBook(a.FullName, b.FullName, null, sheet: selected.Sheet?.Name);
     }
 
-    private async Task Run<T>(Func<T> operation, Action<T> completed, Func<FolderComparisonProgress?>? folderProgress = null)
+    private async Task Run<T>(Func<T> operation, Action<T> completed, Func<FolderComparisonProgress?>? folderProgress = null,
+        Action<string>? showError = null)
     {
         if (busy) return;
         busy = true;
@@ -293,7 +311,11 @@ internal sealed class CompareWindow : Form
         catch (OperationCanceledException) when (closing.IsCancellationRequested) { }
         catch (Exception e) when (FolderComparer.IsReadError(e))
         {
-            if (!IsDisposed) MessageBox.Show(this, e.Message, "比較できません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!IsDisposed)
+            {
+                if (showError is not null) showError(e.Message);
+                else MessageBox.Show(this, e.Message, "比較できません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
         finally
         {
@@ -416,6 +438,7 @@ internal sealed class CompareWindow : Form
             view.MoveDifference(direction);
             return;
         }
+        if (tabs.SelectedTab != folderTab) return;
         var start = fileList.CurrentRow?.Index ?? (direction > 0 ? -1 : fileList.Rows.Count);
         for (var index = start + direction; index >= 0 && index < fileList.Rows.Count; index += direction)
             if (fileList.Rows[index].Tag is FolderRow { Pair.Status: not FileStatus.Same, Sheet: null })
@@ -425,17 +448,23 @@ internal sealed class CompareWindow : Form
             }
     }
 
-    private void CloseDetail(TabPage? page)
+    private void CloseTab(TabPage? page)
     {
-        if (page?.Tag is not WorkbookView || !tabs.TabPages.Contains(page)) return;
+        if (!ComparisonTabs.CanClose(page) || !tabs.TabPages.Contains(page!)) return;
+        if (page == targetTab)
+        {
+            if (busy && page!.Tag is TargetSelection { Enabled: false }) return;
+            targetTab = null;
+        }
         var wasSelected = tabs.SelectedTab == page;
-        page.Dispose();
+        page!.Dispose();
         if (wasSelected && tabs.TabCount == 1 && tabs.TabPages.Contains(folderTab)) tabs.SelectedTab = folderTab;
         UpdateStatus();
     }
 
     private void ClearTabs()
     {
+        targetTab = null;
         tabs.TabPages.Remove(folderTab);
         foreach (var page in tabs.TabPages.Cast<TabPage>().ToArray()) page.Dispose();
     }
@@ -447,12 +476,16 @@ internal sealed class CompareWindow : Form
         showSame.Enabled = folder;
         showSheets.Enabled = folder && !busy;
         if (busy) return;
-        Text = folder ? "フォルダ比較 — Excel Diff" : "ファイル比較 — Excel Diff";
+        Text = folder ? "フォルダ比較 — Excel Diff" : tabs.SelectedTab?.Tag is WorkbookView ? "ファイル比較 — Excel Diff" : "Excel Diff";
+        if (!folder)
+        {
+            status.Text = tabs.SelectedTab?.Tag is WorkbookView workbook ? workbook.Status :
+                tabs.SelectedTab is null ? "「開く…」から比較対象を選択できます。" : "";
+            return;
+        }
         var counts = results.ToLookup(r => r.Status);
         var searchCount = string.IsNullOrWhiteSpace(searchText.Text) ? "" : $"検索結果 {visibleFileCount} / ";
-        status.Text = folder
-            ? $"{searchCount}{results.Count} 件  ・  差分あり {counts[FileStatus.Different].Count()}  ・  同一 {counts[FileStatus.Same].Count()}" +
-              $"  ・  左のみ {counts[FileStatus.LeftOnly].Count()}  ・  右のみ {counts[FileStatus.RightOnly].Count()}  ・  比較不可 {counts[FileStatus.Unreadable].Count()}"
-            : (tabs.SelectedTab?.Tag as WorkbookView)?.Status ?? "";
+        status.Text = $"{searchCount}{results.Count} 件  ・  差分あり {counts[FileStatus.Different].Count()}  ・  同一 {counts[FileStatus.Same].Count()}" +
+            $"  ・  左のみ {counts[FileStatus.LeftOnly].Count()}  ・  右のみ {counts[FileStatus.RightOnly].Count()}  ・  比較不可 {counts[FileStatus.Unreadable].Count()}";
     }
 }

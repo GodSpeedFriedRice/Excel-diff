@@ -21,6 +21,8 @@ internal sealed class ComparisonTabs : TabControl
 
     internal event Action<TabPage>? CloseRequested;
 
+    internal static bool CanClose(TabPage? page) => page?.Tag is WorkbookView or TargetSelection;
+
     protected override void OnDrawItem(DrawItemEventArgs e)
     {
         if (e.Index < 0 || e.Index >= TabCount) return;
@@ -31,10 +33,10 @@ internal sealed class ComparisonTabs : TabControl
         e.Graphics.FillRectangle(background, bounds);
         var close = CloseBounds(bounds);
         var label = Rectangle.FromLTRB(bounds.Left + 8, bounds.Top,
-            page.Tag is WorkbookView ? close.Left - 4 : bounds.Right - 6, bounds.Bottom);
+            CanClose(page) ? close.Left - 4 : bounds.Right - 6, bounds.Bottom);
         TextRenderer.DrawText(e.Graphics, page.Text, Font, label, Theme.Ink,
             TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        if (page.Tag is WorkbookView)
+        if (CanClose(page))
             TextRenderer.DrawText(e.Graphics, "×", Font, close, Theme.Ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
     }
@@ -99,7 +101,7 @@ internal sealed class ComparisonTabs : TabControl
         if (e.Button != MouseButtons.Middle) return;
         for (var index = 0; index < TabCount; index++)
         {
-            if (TabPages[index].Tag is not WorkbookView || !GetTabRect(index).Contains(e.Location)) continue;
+            if (!CanClose(TabPages[index]) || !GetTabRect(index).Contains(e.Location)) continue;
             CloseRequested?.Invoke(TabPages[index]);
             return;
         }
@@ -108,7 +110,7 @@ internal sealed class ComparisonTabs : TabControl
     private TabPage? CloseAt(Point point)
     {
         for (var index = 0; index < TabCount; index++)
-            if (TabPages[index].Tag is WorkbookView && CloseBounds(GetTabRect(index)).Contains(point))
+            if (CanClose(TabPages[index]) && CloseBounds(GetTabRect(index)).Contains(point))
                 return TabPages[index];
         return null;
     }
