@@ -389,7 +389,8 @@ internal sealed class CompareWindow : Form
                 header.DefaultCellStyle.BackColor = Appearance.Panel;
             }
             lastFolder = folder;
-            var row = fileList.Rows[fileList.Rows.Add(Path.GetFileName(pair.RelativePath), folder ?? "", StatusName(pair.Status),
+            var row = fileList.Rows[fileList.Rows.Add(Path.GetFileName(pair.RelativePath), folder ?? "",
+                pair.PackageOnly ? "部品に差分あり" : StatusName(pair.Status),
                 Timestamp(pair.Left), Timestamp(pair.Right), "xlsx")];
             row.Tag = new FolderRow(pair);
             row.Cells[2].ToolTipText = pair.Error;

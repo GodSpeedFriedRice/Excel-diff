@@ -22,9 +22,11 @@ internal sealed class WorkbookView : UserControl
     private readonly TabPage list = new("差分一覧");
     private readonly TabPage full = new("全体プレビュー");
     private readonly TabPage xml = new("XML差分");
+    private readonly TabPage package = new("ブック全体の差分");
     private readonly FullSheetPane leftFull = new();
     private readonly FullSheetPane rightFull = new();
     private readonly XmlDiffView xmlDiff = new();
+    private readonly PackageDiffView packageDiff;
     private readonly TextBox detail = new()
     {
         Dock = DockStyle.Fill, Height = 70, Multiline = true, ReadOnly = true,
@@ -58,6 +60,7 @@ internal sealed class WorkbookView : UserControl
         this.left = left;
         this.right = right;
         this.sheets = sheets;
+        packageDiff = new PackageDiffView(leftPath, rightPath);
 
         var layout = Appearance.Stack();
         var toolbar = Appearance.Toolbar();
@@ -110,6 +113,7 @@ internal sealed class WorkbookView : UserControl
         listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
         list.Controls.Add(listLayout);
         xml.Controls.Add(xmlDiff);
+        package.Controls.Add(packageDiff);
         var fullLayout = Appearance.Stack();
         Appearance.Row(fullLayout, Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)), fill: true);
         Appearance.Row(fullLayout, fullDetails);
@@ -126,7 +130,7 @@ internal sealed class WorkbookView : UserControl
         rightFull.Picked += pick => SelectPreviewCell(pick, before: false);
         leftPreview.Picked += pick => SelectPreviewCell(pick, before: true);
         rightPreview.Picked += pick => SelectPreviewCell(pick, before: false);
-        views.TabPages.AddRange([full, list, xml]);
+        views.TabPages.AddRange([full, list, xml, package]);
         views.SelectedTab = full;
         Appearance.Row(layout, views, fill: true);
         Controls.Add(layout);
@@ -358,6 +362,11 @@ internal sealed class WorkbookView : UserControl
 
     private void UpdateSelection(bool reveal = false)
     {
+        if (views.SelectedTab == package)
+        {
+            packageDiff.LoadComparison();
+            return;
+        }
         var sheet = Current;
         if (views.SelectedTab == xml)
         {

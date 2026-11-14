@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using ExcelDiff.Core.Comparison;
 
 namespace ExcelDiff.Core.Workbooks;
 
@@ -22,16 +23,19 @@ public sealed class WorkbookMergePlan
     private readonly Input[] inputs;
     private readonly Edit[] edits;
 
-    internal WorkbookMergePlan(Input[] inputs, List<Edit> edits, List<MergeNotice> notices)
+    internal WorkbookMergePlan(Input[] inputs, List<Edit> edits, List<MergeNotice> notices,
+        IReadOnlyList<PackagePartMergeDifference> partChanges)
     {
         this.inputs = inputs;
         this.edits = edits.ToArray();
         Changes = Array.AsReadOnly(this.edits.Select(edit => edit.Change).ToArray());
         Notices = notices.AsReadOnly();
+        PartChanges = partChanges;
     }
 
     public IReadOnlyList<MergeCellChange> Changes { get; }
     public IReadOnlyList<MergeNotice> Notices { get; }
+    public IReadOnlyList<PackagePartMergeDifference> PartChanges { get; }
 
     public void Save(string path, IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices, CancellationToken token = default)
     {
@@ -119,14 +123,17 @@ public static partial class WorkbookMerger
     public static WorkbookMergePlan Analyze(string basePath, string productionPath, string incomingPath,
         CancellationToken token = default)
     {
-        var (baseInput, baseBook) = Read(basePath, "共通ベース", token);
-        var (productionInput, production) = Read(productionPath, "本番版", token);
-        var (incomingInput, incoming) = Read(incomingPath, "取り込み元", token);
-        if (baseBook.Date1904 != production.Date1904 || baseBook.Date1904 != incoming.Date1904)
-            throw new InvalidDataException("3冊の日付システム（1900年／1904年）が一致している必要があります。");
-
+        var (baseInput, baseBook, baseParts) = Read(basePath, "共通ベース", token);
+        var (productionInput, production, productionParts) = Read(productionPath, "本番版", token);
+        var (incomingInput, incoming, incomingParts) = Read(incomingPath, "取り込み元", token);
         var edits = new List<WorkbookMergePlan.Edit>();
         var notices = new List<MergeNotice>();
+        var partChanges = PackageComparer.Compare(baseParts, productionParts, incomingParts, token);
+        if (baseBook.Date1904 != production.Date1904 || baseBook.Date1904 != incoming.Date1904)
+        {
+            notices.Add(new("ブック", "3冊の日付システム（1900年／1904年）が異なるため、セルの取り込みは停止します。"));
+            return new([baseInput, productionInput, incomingInput], edits, notices, partChanges);
+        }
         var originalSheets = ByName(baseBook);
         var productionSheets = ByName(production);
         var incomingSheets = ByName(incoming);
@@ -213,17 +220,20 @@ public static partial class WorkbookMerger
                         }
                     };
             }
-        return new([baseInput, productionInput, incomingInput], edits, notices);
+        return new([baseInput, productionInput, incomingInput], edits, notices, partChanges);
     }
 
-    private static (WorkbookMergePlan.Input Input, Workbook Book) Read(string path, string label, CancellationToken token)
+    private static (WorkbookMergePlan.Input Input, Workbook Book, Dictionary<string, PackagePart> Parts) Read(
+        string path, string label, CancellationToken token)
     {
         path = XlsxPath(path);
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             var hash = WorkbookMergePlan.Input.Fingerprint(stream, token);
-            return (new(path, label, hash), XlsxReader.Read(stream, token));
+            var book = XlsxReader.Read(stream, token);
+            stream.Position = 0;
+            return (new(path, label, hash), book, PackageComparer.Read(stream, token));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or System.Xml.XmlException)
         {

@@ -10,6 +10,10 @@ internal sealed class MergeView : UserControl
     private readonly TextBox productionPath = new();
     private readonly TextBox incomingPath = new();
     private readonly DataGridView grid = Appearance.Grid();
+    private readonly TabControl views = new() { Dock = DockStyle.Fill };
+    private readonly TabPage cellTab = new("セル差分");
+    private readonly TabPage packageTab = new("ブック全体の差分");
+    private readonly PackageDiffView packageDiff = new();
     private readonly Label summary = Appearance.Label("");
     private readonly TextBox notices = new()
     {
@@ -98,7 +102,11 @@ internal sealed class MergeView : UserControl
             };
         };
         grid.SelectionChanged += (_, _) => UpdateControls();
-        Appearance.Row(layout, grid, fill: true);
+        cellTab.Controls.Add(grid);
+        packageTab.Controls.Add(packageDiff);
+        views.TabPages.AddRange([cellTab, packageTab]);
+        views.SelectedIndexChanged += (_, _) => UpdateControls();
+        Appearance.Row(layout, views, fill: true);
         Controls.Add(layout);
         foreach (var box in new[] { basePath, productionPath, incomingPath })
             box.TextChanged += (_, _) =>
@@ -142,6 +150,8 @@ internal sealed class MergeView : UserControl
             conflictCount = result.Changes.Count(change => change.Disposition == MergeDisposition.Conflict);
             automaticCount = result.Changes.Count(change => change.Disposition == MergeDisposition.TakeIncoming);
             unsupportedCount = result.Changes.Count(change => change.Disposition == MergeDisposition.Unsupported);
+            packageDiff.SetMerge(result.PartChanges, original, production, incoming);
+            packageTab.Text = $"ブック全体の差分 ({result.PartChanges.Count})";
             rows = result.Changes.OrderByDescending(change => change.Disposition == MergeDisposition.Conflict).ToArray();
             notices.Text = string.Join(Environment.NewLine, result.Notices.Select(notice => $"{notice.Sheet}　{notice.Reason}"));
             notices.Visible = result.Notices.Count > 0;
@@ -190,9 +200,10 @@ internal sealed class MergeView : UserControl
     {
         if (plan is null) return;
         summary.Text = plan.Changes.Count == 0 && plan.Notices.Count == 0
-            ? "マージするセル差分はありません。"
+            ? "マージ対象のセル差分なし"
             : $"自動取り込み {automaticCount} 件　未解決の競合 {conflictCount - choices.Count} / {conflictCount} 件" +
               $"　対象外 {unsupportedCount} セル・{plan.Notices.Count} シート";
+        if (plan.PartChanges.Count > 0) summary.Text += "　｜　保存に反映するのはセル差分の採用結果です。";
     }
 
     private MergeCellChange? At(int row) => row >= 0 && row < rows.Length ? rows[row] : null;
@@ -213,6 +224,8 @@ internal sealed class MergeView : UserControl
         rows = [];
         choices.Clear();
         grid.RowCount = 0;
+        packageTab.Text = "ブック全体の差分";
+        packageDiff.ResetMerge();
         notices.Visible = false;
         conflictCount = automaticCount = unsupportedCount = 0;
     }
@@ -231,7 +244,7 @@ internal sealed class MergeView : UserControl
         analyze.Enabled = !busy && !string.IsNullOrWhiteSpace(basePath.Text) &&
             !string.IsNullOrWhiteSpace(productionPath.Text) && !string.IsNullOrWhiteSpace(incomingPath.Text);
         save.Enabled = !busy && plan is not null && choices.Count == conflictCount;
-        useProduction.Enabled = useIncoming.Enabled = !busy && grid.CurrentRow is { } row &&
+        useProduction.Enabled = useIncoming.Enabled = !busy && views.SelectedTab == cellTab && grid.CurrentRow is { } row &&
             At(row.Index)?.Disposition == MergeDisposition.Conflict;
     }
 

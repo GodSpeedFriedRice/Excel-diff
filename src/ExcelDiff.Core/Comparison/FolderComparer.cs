@@ -8,7 +8,10 @@ public enum FileStatus { Same, Different, LeftOnly, RightOnly, Unreadable }
 public sealed record SheetSummary(string Name, FileStatus Status, int DifferenceCount);
 
 public sealed record FilePair(string RelativePath, FileInfo? Left, FileInfo? Right, FileStatus Status,
-    IReadOnlyList<SheetSummary> Sheets, string? Error);
+    IReadOnlyList<SheetSummary> Sheets, string? Error)
+{
+    public bool PackageOnly { get; init; }
+}
 
 public sealed record FolderComparisonProgress(int Completed, int Total);
 
@@ -50,7 +53,11 @@ public static class FolderComparer
             var sheets = WorkbookComparer.Compare(leftBook, rightBook, token: token)
                 .Select(SummarizeSheet).ToArray();
             var same = leftBook.Date1904 == rightBook.Date1904 && sheets.All(sheet => sheet.Status == FileStatus.Same);
-            return new FilePair(name, a, b, same ? FileStatus.Same : FileStatus.Different, sheets, null);
+            var packageOnly = same && PackageComparer.Compare(a.FullName, b.FullName, token).Count > 0;
+            return new FilePair(name, a, b, same && !packageOnly ? FileStatus.Same : FileStatus.Different, sheets, null)
+            {
+                PackageOnly = packageOnly
+            };
         }
         catch (Exception e) when (IsReadError(e))
         {

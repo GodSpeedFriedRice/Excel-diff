@@ -43,6 +43,7 @@ internal sealed class XmlDiffView : UserControl
     private readonly List<int> changeStarts = [];
     private readonly HashSet<int> expandedHunks = [];
     private int longestLine;
+    private string? equalSummary;
 
     internal XmlDiffView()
     {
@@ -56,7 +57,7 @@ internal sealed class XmlDiffView : UserControl
         Appearance.Row(layout, toolbar);
 
         grid.VirtualMode = true;
-        grid.AccessibleName = "シートのXML差分";
+        grid.AccessibleName = "XML差分";
         grid.DefaultCellStyle.Font = codeFont;
         grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
         grid.SelectionMode = DataGridViewSelectionMode.CellSelect;
@@ -110,15 +111,43 @@ internal sealed class XmlDiffView : UserControl
         });
     }
 
-    internal async void ShowSheets(Sheet? left, Sheet? right)
+    internal void ShowSheets(Sheet? left, Sheet? right)
     {
         if (ReferenceEquals(before, left) && ReferenceEquals(after, right) && (diff is not null || pending is not null)) return;
         before = left;
         after = right;
         var oldPath = left?.XmlPartPath;
         var newPath = right?.XmlPartPath;
-        fileHeader.Text = oldPath is not null && newPath is not null && oldPath != newPath
+        var path = oldPath is not null && newPath is not null && oldPath != newPath
             ? $"{oldPath} → {newPath}" : oldPath ?? newPath ?? left?.Name ?? right?.Name ?? "";
+        ShowXml(path, token => XmlLineDiff.Compare(left?.Xml, right?.Xml, token));
+    }
+
+    internal void ShowPart(string beforePath, PackagePart? beforePart, string afterPath, PackagePart? afterPart)
+    {
+        var bytesDiffer = beforePart?.Sha256 != afterPart?.Sha256;
+        ShowXml(beforePart?.Path ?? afterPart?.Path ?? "", token =>
+        {
+            var left = PackageComparer.ReadXml(beforePath, beforePart, token);
+            var right = PackageComparer.ReadXml(afterPath, afterPart, token);
+            return XmlLineDiff.Compare(left, right, token);
+        }, bytesDiffer ? "整形後のXMLは同じです。元のデータに差分があります。" : null);
+    }
+
+    internal void Clear()
+    {
+        pending?.Cancel();
+        pending = null;
+        diff = null;
+        fileHeader.Text = "";
+        summary.Text = "";
+        Render();
+    }
+
+    private async void ShowXml(string title, Func<CancellationToken, XmlLineDiff> compare, string? whenEqual = null)
+    {
+        fileHeader.Text = title;
+        equalSummary = whenEqual;
         expandedHunks.Clear();
         horizontal.Value = 0;
         pending?.Cancel();
@@ -129,15 +158,15 @@ internal sealed class XmlDiffView : UserControl
         summary.Text = "XMLを比較しています…";
         try
         {
-            var result = await Task.Run(() => XmlLineDiff.Compare(left?.Xml, right?.Xml, request.Token), request.Token);
+            var result = await Task.Run(() => compare(request.Token), request.Token);
             if (IsDisposed || !ReferenceEquals(pending, request)) return;
             diff = result;
             Render();
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
-        catch (ArgumentException)
+        catch (Exception error) when (FolderComparer.IsReadError(error))
         {
-            if (!IsDisposed && ReferenceEquals(pending, request)) summary.Text = "XML差分を表示できません。";
+            if (!IsDisposed && ReferenceEquals(pending, request)) summary.Text = $"XML差分を表示できません。{error.Message}";
         }
         finally
         {
@@ -168,7 +197,7 @@ internal sealed class XmlDiffView : UserControl
             else blocks[^1] = (blocks[^1].First, end);
         }
 
-        summary.Text = additions == 0 && removals == 0 ? "XMLに差分はありません。" :
+        summary.Text = additions == 0 && removals == 0 ? equalSummary ?? "XMLに差分はありません。" :
             $"+{additions} 行　−{removals} 行" + (diff.HasUnalignedBlocks ? "　大きな変更は範囲単位で表示" : "");
         if (showAll.Checked)
             AppendRows(lines, 0, lines.Count);

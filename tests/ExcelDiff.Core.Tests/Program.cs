@@ -33,6 +33,7 @@ try
     CheckAxisChanges(scratch.FullName);
     CheckXmlDiff();
     MergeChecks.Run(scratch.FullName, a, Check);
+    PackageChecks.Run(scratch.FullName, a, Check);
     Check(keyed.Differences.Any(d => d is { Kind: ChangeKind.RowLayout, Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
     Check(WorkbookComparer.Compare(left, right, 6).Single() is { UsesKey: false, KeyWarning: not null }, "空のキー列はセル番地比較に戻す");
 
@@ -53,8 +54,10 @@ try
     {
         ["sample.xlsx"] = FileStatus.Different, ["left.xlsx"] = FileStatus.LeftOnly,
         ["right.xlsx"] = FileStatus.RightOnly, ["broken.xlsx"] = FileStatus.Unreadable,
-        ["equivalent.xlsx"] = FileStatus.Same
+        ["equivalent.xlsx"] = FileStatus.Different, ["identical.xlsx"] = FileStatus.Same
     };
+    File.Copy(a, Path.Combine(before, "identical.xlsx"));
+    File.Copy(a, Path.Combine(after, "identical.xlsx"));
     File.Copy(a, Path.Combine(before, "~$ignored.xlsx"));
     File.WriteAllText(Path.Combine(after, "ignored.txt"), "");
     var progress = new List<FolderComparisonProgress>();
@@ -68,6 +71,8 @@ try
     Check(progress.SequenceEqual([new FolderComparisonProgress(0, 0)]), "比較対象がない場合も総件数を通知する");
     Check(results.Single(r => Path.GetFileName(r.RelativePath) == "equivalent.xlsx").Sheets.Single() is
         { Name: "Sheet1", Status: FileStatus.Same, DifferenceCount: 0 }, "格納形式だけが違うファイルのシートを同一と表示する");
+    Check(results.Single(r => Path.GetFileName(r.RelativePath) == "equivalent.xlsx") is
+        { Status: FileStatus.Different, PackageOnly: true }, "格納形式の差分はファイルの部品差分として表示する");
     Check(results.Single(r => Path.GetFileName(r.RelativePath) == "sample.xlsx").Sheets.Single() is
         { Name: "Sheet1", Status: FileStatus.Different, DifferenceCount: > 0 }, "差分シートの件数をフォルダ比較から取得できる");
     Check(results.Single(r => Path.GetFileName(r.RelativePath) == "broken.xlsx").Sheets.Count == 0, "比較できないファイルのシート結果は空にする");
