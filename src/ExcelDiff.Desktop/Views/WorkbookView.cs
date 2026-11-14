@@ -40,8 +40,7 @@ internal sealed class WorkbookView : UserControl
     private readonly TableLayoutPanel listLayout = Appearance.Stack();
     private readonly TableLayoutPanel previews;
 
-    private SheetDiff? fullSheet;
-    private Difference? fullDifference;
+    private int differenceIndex = -1;
     private bool updating;
     private bool comparing;
 
@@ -89,8 +88,18 @@ internal sealed class WorkbookView : UserControl
         differences.RowHeightInfoNeeded += (_, e) => e.Height = (int)Math.Round(28 * listZoom.Scale);
         differences.ZoomRequested += ZoomList;
         differences.CellValueNeeded += FillDifference;
-        differences.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) views.SelectedTab = full; };
-        differences.CurrentCellChanged += (_, _) => { if (!updating) UpdateSelection(); };
+        differences.CellDoubleClick += (_, e) =>
+        {
+            if (e.RowIndex < 0) return;
+            views.SelectedTab = full;
+            SelectDifference(e.RowIndex, reveal: true);
+        };
+        differences.CurrentCellChanged += (_, _) =>
+        {
+            if (updating || views.SelectedTab != list) return;
+            differenceIndex = differences.CurrentCell?.RowIndex ?? -1;
+            UpdateSelection();
+        };
 
         previews = Split(Pane("左 ・ 変更前", leftPath, leftPreview), Pane("右 ・ 変更後", rightPath, rightPreview));
         listLayout.Controls.Add(differences, 0, 0);
@@ -102,16 +111,6 @@ internal sealed class WorkbookView : UserControl
         list.Controls.Add(listLayout);
         xml.Controls.Add(xmlDiff);
         var fullLayout = Appearance.Stack();
-        var legend = Appearance.Toolbar();
-        foreach (var (caption, background) in new[]
-            { ("変更", Appearance.Changed), ("追加", Appearance.Added), ("削除", Appearance.Removed) })
-        {
-            var label = Appearance.Label(caption);
-            label.BackColor = background;
-            label.Padding = new Padding(5, 1, 5, 1);
-            legend.Controls.Add(label);
-        }
-        Appearance.Row(fullLayout, legend);
         Appearance.Row(fullLayout, Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)), fill: true);
         Appearance.Row(fullLayout, fullDetails);
         full.Controls.Add(fullLayout);
@@ -121,19 +120,38 @@ internal sealed class WorkbookView : UserControl
         rightFull.ZoomRequested += ZoomFull;
         leftFull.Picked += pick => SelectPreviewCell(pick, before: true);
         rightFull.Picked += pick => SelectPreviewCell(pick, before: false);
-        views.TabPages.AddRange([list, full, xml]);
+        views.TabPages.AddRange([full, list, xml]);
+        views.SelectedTab = full;
         Appearance.Row(layout, views, fill: true);
         Controls.Add(layout);
 
         sheetPicker.SelectedIndexChanged += (_, _) => { if (!updating) ShowSheet(); };
         views.SelectedIndexChanged += (_, _) =>
         {
+            if (views.SelectedTab == list && differences.RowCount > 0)
+                SelectDifference(Math.Max(0, differenceIndex));
+            else
+                UpdateSelection();
             UpdateZoomIndicator();
-            UpdateSelection();
             if (views.SelectedTab == full) leftFull.FocusSurface();
             else if (views.SelectedTab == list) differences.Focus();
         };
         LoadPicker(0);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (views.SelectedTab == full)
+        {
+            if (keyData is (Keys.Control | Keys.Up) or (Keys.Control | Keys.Down))
+            {
+                MoveDifference(keyData == (Keys.Control | Keys.Up) ? -1 : 1);
+                return true;
+            }
+            if ((keyData is Keys.Up or Keys.Down) && (leftFull.ContainsFocus || rightFull.ContainsFocus))
+                return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     internal void SetPreviewOptions(PreviewOptions options)
@@ -155,7 +173,7 @@ internal sealed class WorkbookView : UserControl
             listLayout.RowStyles[2].Height = options.ShowNearby ? 44 : 0;
         }
         if (options.UseSavedZoom != previous.UseSavedZoom || views.SelectedTab == list && options.ShowNearby != previous.ShowNearby)
-            UpdateSelection(jumpToDifference: false);
+            UpdateSelection();
     }
 
     private void ZoomList(int delta)
@@ -280,9 +298,10 @@ internal sealed class WorkbookView : UserControl
         warning.Text = Current?.KeyWarning ?? "";
         updating = true;
         differences.RowCount = Current?.Differences.Count ?? 0;
+        differenceIndex = differences.RowCount > 0 && views.SelectedTab == list ? 0 : -1;
         if (differences.RowCount > 0)
         {
-            differences.CurrentCell = differences[0, 0];
+            differences.CurrentCell = differenceIndex >= 0 ? differences[0, differenceIndex] : null;
             if (differences.FirstDisplayedScrollingRowIndex > 0 && differences.DisplayedRowCount(false) > 0)
                 differences.FirstDisplayedScrollingRowIndex = 0;
         }
@@ -322,10 +341,7 @@ internal sealed class WorkbookView : UserControl
         if (Current is not SheetDiff sheet) return;
         if (pick.DifferenceIndices.Count > 0)
         {
-            updating = true;
-            differences.CurrentCell = differences[0, pick.DifferenceIndices[0]];
-            updating = false;
-            UpdateSelection(jumpToDifference: false);
+            SelectDifference(pick.DifferenceIndices[0]);
             fullDetails.Text = string.Join(Environment.NewLine + Environment.NewLine,
                 pick.DifferenceIndices.Select(index => DescribeDifference(sheet.Differences[index])));
             return;
@@ -337,7 +353,7 @@ internal sealed class WorkbookView : UserControl
         fullDetails.Text = $"{side}　{pick.Address}{value}{formula}";
     }
 
-    private void UpdateSelection(bool jumpToDifference = true)
+    private void UpdateSelection(bool reveal = false)
     {
         var sheet = Current;
         if (views.SelectedTab == xml)
@@ -346,32 +362,30 @@ internal sealed class WorkbookView : UserControl
             return;
         }
 
-        var index = differences.CurrentCell?.RowIndex ?? -1;
+        var index = differenceIndex;
         var count = sheet?.Differences.Count ?? 0;
         var diff = index >= 0 && index < count ? sheet!.Differences[index] : null;
         position.Text = $"{(diff is null ? 0 : index + 1)} / {count}";
         detail.Text = diff is not null ? DescribeDifference(diff) : sheet is null
-            ? "比較できるシートがありません。" : "比較対象の項目に差分はありません。";
+            ? "比較できるシートがありません。" : count == 0 ? "比較対象の項目に差分はありません。" :
+                "セルを選択すると詳細を表示します。次の差分へは Ctrl+↓ で移動できます。";
 
         var column = diff?.Column ?? 1;
         var leftRow = diff?.LeftRow ?? diff?.RightRow ?? 1;
         var rightRow = diff?.RightRow ?? diff?.LeftRow ?? 1;
         if (views.SelectedTab == full)
         {
-            var jump = jumpToDifference && (!ReferenceEquals(fullSheet, sheet) || !ReferenceEquals(fullDifference, diff));
             fullDetails.Text = detail.Text;
             leftFull.SetChanges(sheet?.Differences, before: true);
             rightFull.SetChanges(sheet?.Differences, before: false);
-            fullSheet = sheet;
-            fullDifference = diff;
             var rowLayout = diff?.Kind == ChangeKind.RowLayout || diff?.Column is null && diff?.LeftRow is not null;
             var columnLayout = diff?.Kind == ChangeKind.ColumnLayout;
             var leftMark = diff?.LeftRow is not null || columnLayout;
             var rightMark = diff?.RightRow is not null || columnLayout;
             leftFull.ShowSheet(sheet?.Left, leftRow, column, diff?.LeftMerge, rowLayout, columnLayout,
-                previewOptions.UseSavedZoom, left.Date1904, jump, leftMark, diff?.LayoutCount ?? 1);
+                previewOptions.UseSavedZoom, left.Date1904, reveal && diff is not null, leftMark, diff?.LayoutCount ?? 1);
             rightFull.ShowSheet(sheet?.Right, rightRow, column, diff?.RightMerge, rowLayout, columnLayout,
-                previewOptions.UseSavedZoom, right.Date1904, jump, rightMark, diff?.LayoutCount ?? 1);
+                previewOptions.UseSavedZoom, right.Date1904, reveal && diff is not null, rightMark, diff?.LayoutCount ?? 1);
             return;
         }
         if (!previewOptions.ShowNearby) return;
@@ -385,8 +399,17 @@ internal sealed class WorkbookView : UserControl
     internal void MoveDifference(int delta)
     {
         if (differences.RowCount == 0) return;
+        var index = Math.Clamp(differenceIndex + delta, 0, differences.RowCount - 1);
         if (views.SelectedTab == xml) views.SelectedTab = list;
-        var index = Math.Clamp((differences.CurrentCell?.RowIndex ?? -1) + delta, 0, differences.RowCount - 1);
+        SelectDifference(index, reveal: true);
+    }
+
+    private void SelectDifference(int index, bool reveal = false)
+    {
+        differenceIndex = index;
+        updating = true;
         differences.CurrentCell = differences[0, index];
+        updating = false;
+        UpdateSelection(reveal);
     }
 }

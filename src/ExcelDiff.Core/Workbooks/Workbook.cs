@@ -17,6 +17,7 @@ public sealed record Sheet(string Name, string Visibility,
         RowFormats.GetValueOrDefault(row) ?? ColumnFormats.GetValueOrDefault(column) ?? DefaultFormat;
 
     public (int Row, int Column)? UsedCellExtent { get; init; }
+    public string? XmlPartPath { get; init; }
 
     public Cell? At(int row, int column) =>
         Rows.TryGetValue(row, out var cells) ? cells.GetValueOrDefault(column) : null;

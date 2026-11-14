@@ -37,13 +37,14 @@ public static class XlsxReader
             var area = book.Element(ns + "definedNames")?.Elements(ns + "definedName").FirstOrDefault(e =>
                 (string?)e.Attribute("name") == "_xlnm.Print_Area" &&
                 (int?)e.Attribute("localSheetId") == entry.ElementsBeforeSelf().Count());
+            var partPath = Resolve(workbookPath, relation);
             sheets.Add(ReadSheet(name, (string?)entry.Attribute("state") ?? "visible",
-                Part(zip, Resolve(workbookPath, relation)), shared, formats, area?.Value, token));
+                Part(zip, partPath), partPath, shared, formats, area?.Value, token));
         }
         return new Workbook(sheets, True((string?)book.Element(ns + "workbookPr")?.Attribute("date1904")));
     }
 
-    private static Sheet ReadSheet(string name, string visibility, XDocument document, string[] shared,
+    private static Sheet ReadSheet(string name, string visibility, XDocument document, string partPath, string[] shared,
         StyleTable styles, string? area, CancellationToken token)
     {
         var sheet = document.Root!;
@@ -147,7 +148,8 @@ public static class XlsxReader
         {
             RowFormats = rowStyles,
             ColumnFormats = columnStyles,
-            UsedCellExtent = (lastUsedRow, lastUsedColumn)
+            UsedCellExtent = (lastUsedRow, lastUsedColumn),
+            XmlPartPath = partPath
         };
     }
 

@@ -82,7 +82,8 @@ internal sealed class FullSheetPane : UserControl
     internal void ShowSheet(Sheet? sheet, int targetRow, int targetColumn, MergeRange? merge,
         bool rowLayout, bool columnLayout, bool useSavedZoom, bool use1904, bool jump, bool mark, int count)
     {
-        if (!ReferenceEquals(source, sheet) || savedZoom != useSavedZoom || date1904 != use1904)
+        var sheetChanged = !ReferenceEquals(source, sheet);
+        if (sheetChanged || savedZoom != useSavedZoom || date1904 != use1904)
         {
             source = sheet;
             savedZoom = useSavedZoom;
@@ -100,9 +101,24 @@ internal sealed class FullSheetPane : UserControl
         layoutCount = count;
         markRow = rowLayout;
         markColumn = columnLayout;
-        highlightedMerge = merge;
-        if (jump) SetPosition(Math.Max(1, targetRow - 1), Math.Max(1, targetColumn - 1));
-        else SetPosition(row, column);
+        highlightedMerge = mark ? merge : null;
+        if (sheetChanged) SetPosition(1, 1);
+        if (jump && session is { } active)
+        {
+            var top = merge?.FirstRow ?? targetRow;
+            var left = merge?.FirstColumn ?? targetColumn;
+            SetPosition(
+                columnLayout ? row : Reveal(active.Raster.Rows, row, top, SourcePixels(surface.Height - HeaderHeight)),
+                rowLayout ? column : Reveal(active.Raster.Columns, column, left, SourcePixels(surface.Width - HeaderWidth)));
+        }
+        else if (!sheetChanged) SetPosition(row, column);
+    }
+
+    private static int Reveal(PreviewAxis axis, int first, int target, int available)
+    {
+        if (target >= first && (target == first || axis.Position(target + 1) - axis.Position(first) <= available))
+            return first;
+        return Math.Max(1, target - 1);
     }
 
     internal void FocusSurface() => surface.Focus();
@@ -294,7 +310,7 @@ internal sealed class FullSheetPane : UserControl
         }
         if (active.Failed)
             TextRenderer.DrawText(graphics, "プレビュー画像を読み込めません", Font, new Point(HeaderWidth + 8, HeaderHeight + 8), Appearance.Muted);
-        DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, tint, outline);
+        DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, outline);
         DrawSelection(graphics, active.Raster, body);
         graphics.Restore(state);
 
@@ -319,7 +335,7 @@ internal sealed class FullSheetPane : UserControl
     }
 
     private void DrawBodyChanges(Graphics graphics, SheetRaster raster, Rectangle body, int[] visibleRows,
-        int[] visibleColumns, SolidBrush tint, Pen outline)
+        int[] visibleColumns, Pen outline)
     {
         if (marks is null || visibleRows.Length == 0 || visibleColumns.Length == 0) return;
         foreach (var (range, mark) in marks.Rows(visibleRows[0], visibleRows[^1]))
@@ -327,20 +343,20 @@ internal sealed class FullSheetPane : UserControl
             if (!mark.FillRow) continue;
             var band = Rectangle.FromLTRB(body.Left, RowOffset(raster, range.FirstRow),
                 body.Right, RowOffset(raster, range.LastRow + 1));
-            DrawMark(graphics, body, band, mark.Color, tint, outline);
+            DrawMark(graphics, body, band, mark.Color, outline);
         }
         foreach (var (range, mark) in marks.Merges(visibleRows[0], visibleRows[^1]))
         {
             if (range.FirstColumn > visibleColumns[^1] || range.LastColumn < visibleColumns[0]) continue;
             var bounds = CellBounds(raster, range.FirstRow, range.FirstColumn, range.LastRow, range.LastColumn);
-            DrawMark(graphics, body, bounds, mark.Color, tint, outline);
+            DrawMark(graphics, body, bounds, mark.Color, outline);
         }
         foreach (var r in visibleRows)
         {
             if (marks.CellsInRow(r) is not { } cells) continue;
             foreach (var c in visibleColumns)
                 if (cells.TryGetValue(c, out var mark))
-                    DrawMark(graphics, body, CellBounds(raster, r, c, r, c), mark.Color, tint, outline);
+                    DrawMark(graphics, body, CellBounds(raster, r, c, r, c), mark.Color, outline);
         }
     }
 
@@ -355,7 +371,7 @@ internal sealed class FullSheetPane : UserControl
             {
                 var band = Rectangle.FromLTRB(0, RowOffset(raster, range.FirstRow),
                     HeaderWidth, RowOffset(raster, range.LastRow + 1));
-                DrawMark(graphics, clip, band, mark.Color, tint, outline);
+                DrawMark(graphics, clip, band, mark.Color, outline, tint);
             }
         }
         if (visibleColumns.Length > 0)
@@ -365,7 +381,7 @@ internal sealed class FullSheetPane : UserControl
             {
                 var band = Rectangle.FromLTRB(ColumnOffset(raster, range.FirstRow),
                     0, ColumnOffset(raster, range.LastRow + 1), HeaderHeight);
-                DrawMark(graphics, clip, band, mark.Color, tint, outline);
+                DrawMark(graphics, clip, band, mark.Color, outline, tint);
             }
         }
     }
@@ -383,16 +399,19 @@ internal sealed class FullSheetPane : UserControl
         Rectangle.FromLTRB(ColumnOffset(raster, firstColumn), RowOffset(raster, firstRow),
             ColumnOffset(raster, lastColumn + 1), RowOffset(raster, lastRow + 1));
 
-    private static void DrawMark(Graphics graphics, Rectangle clip, Rectangle bounds, Color color, SolidBrush tint, Pen outline)
+    private static void DrawMark(Graphics graphics, Rectangle clip, Rectangle bounds, Color color, Pen outline, SolidBrush? tint = null)
     {
         var visible = Rectangle.Intersect(clip, bounds);
         if (visible.Width <= 0 || visible.Height <= 0) return;
         var border = color == Appearance.Added ? Color.FromArgb(33, 122, 76) :
             color == Appearance.Removed ? Color.FromArgb(176, 49, 71) : Color.FromArgb(180, 107, 0);
-        tint.Color = Color.FromArgb(48, border);
-        graphics.FillRectangle(tint, visible);
+        if (tint is not null)
+        {
+            tint.Color = Color.FromArgb(48, border);
+            graphics.FillRectangle(tint, visible);
+        }
         outline.Color = border;
-        graphics.DrawRectangle(outline, visible.X, visible.Y, visible.Width - 1, visible.Height - 1);
+        graphics.DrawRectangle(outline, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
     }
 
     private void DrawSelection(Graphics graphics, SheetRaster raster, Rectangle body)
@@ -407,7 +426,7 @@ internal sealed class FullSheetPane : UserControl
         var top = markColumn ? body.Top : RowOffset(raster, firstRow);
         var bottom = markColumn ? body.Bottom : RowOffset(raster, lastRow + 1);
         if (right <= left || bottom <= top) return;
-        using var pen = new Pen(Appearance.Blue);
+        using var pen = new Pen(Color.FromArgb(20, 111, 220), 2) { Alignment = PenAlignment.Inset };
         graphics.DrawRectangle(pen, left, top, right - left - 1, bottom - top - 1);
     }
 
