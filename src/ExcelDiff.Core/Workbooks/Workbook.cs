@@ -26,6 +26,7 @@ public sealed record Sheet(string Name, string Visibility,
 
 public sealed record Cell(string Kind, string Value, string? Formula, IReadOnlyDictionary<string, string> Format)
 {
+    internal bool HasRichText { get; init; }
     public string Display => Kind == "b" ? (Value == "1" ? "TRUE" : "FALSE") : Value;
 }
 

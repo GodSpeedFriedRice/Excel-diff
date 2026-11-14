@@ -48,6 +48,7 @@ internal sealed class CompareWindow : Form
         var menu = new MenuStrip { Dock = DockStyle.Fill, BackColor = Color.White };
         var file = new ToolStripMenuItem("ファイル");
         file.DropDownItems.Add(new ToolStripMenuItem("開く…", null, (_, _) => Choose()) { ShortcutKeys = Keys.Control | Keys.O });
+        file.DropDownItems.Add(new ToolStripMenuItem("3方向マージ…", null, (_, _) => OpenMerge()));
         file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseTab(tabs.SelectedTab))
         {
             ShortcutKeys = Keys.Control | Keys.W
@@ -448,6 +449,20 @@ internal sealed class CompareWindow : Form
             }
     }
 
+    private void OpenMerge()
+    {
+        var page = tabs.TabPages.Cast<TabPage>().FirstOrDefault(item => item.Tag is MergeView);
+        if (page is null)
+        {
+            var merge = new MergeView();
+            page = new TabPage("3方向マージ") { Tag = merge };
+            page.Controls.Add(merge);
+            tabs.TabPages.Add(page);
+        }
+        tabs.SelectedTab = page;
+        UpdateStatus();
+    }
+
     private void CloseTab(TabPage? page)
     {
         if (!ComparisonTabs.CanClose(page) || !tabs.TabPages.Contains(page!)) return;
@@ -466,7 +481,7 @@ internal sealed class CompareWindow : Form
     {
         targetTab = null;
         tabs.TabPages.Remove(folderTab);
-        foreach (var page in tabs.TabPages.Cast<TabPage>().ToArray()) page.Dispose();
+        foreach (var page in tabs.TabPages.Cast<TabPage>().Where(page => page.Tag is not MergeView).ToArray()) page.Dispose();
     }
 
     private void UpdateStatus()
@@ -476,7 +491,12 @@ internal sealed class CompareWindow : Form
         showSame.Enabled = folder;
         showSheets.Enabled = folder && !busy;
         if (busy) return;
-        Text = folder ? "フォルダ比較 — Excel Diff" : tabs.SelectedTab?.Tag is WorkbookView ? "ファイル比較 — Excel Diff" : "Excel Diff";
+        Text = tabs.SelectedTab?.Tag switch
+        {
+            WorkbookView => "ファイル比較 — Excel Diff",
+            MergeView => "3方向マージ — Excel Diff",
+            _ => folder ? "フォルダ比較 — Excel Diff" : "Excel Diff"
+        };
         if (!folder)
         {
             status.Text = tabs.SelectedTab?.Tag is WorkbookView workbook ? workbook.Status :

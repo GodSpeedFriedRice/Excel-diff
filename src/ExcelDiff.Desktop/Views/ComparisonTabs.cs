@@ -21,7 +21,7 @@ internal sealed class ComparisonTabs : TabControl
 
     internal event Action<TabPage>? CloseRequested;
 
-    internal static bool CanClose(TabPage? page) => page?.Tag is WorkbookView or TargetSelection;
+    internal static bool CanClose(TabPage? page) => page?.Tag is WorkbookView or TargetSelection or MergeView;
 
     protected override void OnDrawItem(DrawItemEventArgs e)
     {

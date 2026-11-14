@@ -14,19 +14,23 @@ public static partial class XlsxReader
         path = Path.GetFullPath(path);
         var lastWriteTime = includePictures ? File.GetLastWriteTimeUtc(path) : default;
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
-        var office = Part(zip, "_rels/.rels").Root!.Elements().FirstOrDefault(e => IsType(e, "officeDocument"))
-            ?? throw new InvalidDataException("ブックが見つかりません。");
-        var workbookPath = Resolve("", office);
+        return Read(stream, path, lastWriteTime, token, includePictures);
+    }
+
+    internal static Workbook Read(Stream stream, CancellationToken token) => Read(stream, "", default, token, false);
+
+    private static Workbook Read(Stream stream, string path, DateTime lastWriteTime, CancellationToken token, bool includePictures)
+    {
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+        var workbookPath = WorkbookPartPath(zip);
         var book = Part(zip, workbookPath).Root!;
         var ns = book.Name.Namespace;
-        var slash = workbookPath.LastIndexOf('/') + 1;
-        var relations = Part(zip, workbookPath[..slash] + "_rels/" + workbookPath[slash..] + ".rels")
+        var relations = Part(zip, RelationshipsPath(workbookPath))
             .Root!.Elements().ToDictionary(e => Required(e, "Id"));
         XDocument? Related(string type) => relations.Values.FirstOrDefault(e => IsType(e, type)) is XElement relation
             ? Part(zip, Resolve(workbookPath, relation)) : null;
 
-        var shared = Related("sharedStrings")?.Root?.Elements().Select(ReadText).ToArray() ?? [];
+        var shared = Related("sharedStrings")?.Root?.Elements().Select(ReadCellText).ToArray() ?? [];
         var formats = new StyleTable(Related("styles"), Related("theme"));
         var sheets = new List<Sheet>();
         foreach (var entry in book.Element(ns + "sheets")?.Elements(ns + "sheet") ?? [])
@@ -51,7 +55,7 @@ public static partial class XlsxReader
         return new Workbook(sheets, True((string?)book.Element(ns + "workbookPr")?.Attribute("date1904")));
     }
 
-    private static Sheet ReadSheet(string name, string visibility, XDocument document, string partPath, string[] shared,
+    private static Sheet ReadSheet(string name, string visibility, XDocument document, string partPath, (string Text, bool Rich)[] shared,
         StyleTable styles, string? area, CancellationToken token)
     {
         var sheet = document.Root!;
@@ -116,14 +120,15 @@ public static partial class XlsxReader
                 if (column > 16384) throw new InvalidDataException("列番号が無効です。");
                 var kind = (string?)cell.Attribute("t") ?? "n";
                 var value = (string?)cell.Element(ns + "v") ?? "";
+                var rich = false;
                 if (kind == "s")
                 {
                     if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var index) || index >= shared.Length)
                         throw new InvalidDataException("共有文字列への参照が無効です。");
-                    value = shared[index];
+                    (value, rich) = shared[index];
                 }
                 else if (kind == "inlineStr" && cell.Element(ns + "is") is XElement inline)
-                    value = ReadText(inline);
+                    (value, rich) = ReadCellText(inline);
                 if (kind is "s" or "inlineStr" or "str") kind = "text";
                 if (kind == "n" && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
                     value = number == 0 ? "0" : number.ToString("G", CultureInfo.InvariantCulture);
@@ -139,9 +144,9 @@ public static partial class XlsxReader
                 }
                 var inherited = rowFormat ?? columnStyles.GetValueOrDefault(column) ?? styles[0];
                 var format = (int?)cell.Attribute("s") is int cellStyle ? styles[cellStyle] : inherited;
-                if (value.Length != 0 || formula is not null || !ReferenceEquals(format, inherited))
+                if (value.Length != 0 || formula is not null || rich || !ReferenceEquals(format, inherited))
                 {
-                    cells.Add(column, new Cell(kind, value, formula, format));
+                    cells.Add(column, new Cell(kind, value, formula, format) { HasRichText = rich });
                     lastUsedColumn = Math.Max(lastUsedColumn, column);
                 }
             }
@@ -160,7 +165,20 @@ public static partial class XlsxReader
         };
     }
 
-    private static XDocument Part(ZipArchive zip, string path)
+    internal static string WorkbookPartPath(ZipArchive zip)
+    {
+        var office = Part(zip, "_rels/.rels").Root!.Elements().FirstOrDefault(e => IsType(e, "officeDocument"))
+            ?? throw new InvalidDataException("ブックが見つかりません。");
+        return Resolve("", office);
+    }
+
+    internal static string RelationshipsPath(string partPath)
+    {
+        var slash = partPath.LastIndexOf('/') + 1;
+        return partPath[..slash] + "_rels/" + partPath[slash..] + ".rels";
+    }
+
+    internal static XDocument Part(ZipArchive zip, string path)
     {
         var entry = zip.GetEntry(path) ?? throw new InvalidDataException($"必要なデータがありません: {path}");
         using var stream = entry.Open();
@@ -172,7 +190,7 @@ public static partial class XlsxReader
         return XDocument.Load(reader);
     }
 
-    private static string Resolve(string parent, XElement relation)
+    internal static string Resolve(string parent, XElement relation)
     {
         var baseUri = new Uri(new Uri("https://xlsx.invalid/"), parent);
         if ((string?)relation.Attribute("TargetMode") == "External" ||
@@ -185,14 +203,15 @@ public static partial class XlsxReader
     private static string Required(XElement element, string name) => (string?)element.Attribute(name)
         ?? throw new InvalidDataException($"必要な属性がありません: {name}");
 
-    private static bool IsType(XElement relation, string type) =>
+    internal static bool IsType(XElement relation, string type) =>
         ((string?)relation.Attribute("Type"))?.EndsWith("/" + type, StringComparison.Ordinal) == true;
 
-    private static string ReadText(XElement element)
+    private static (string Text, bool Rich) ReadCellText(XElement element)
     {
         var ns = element.Name.Namespace;
-        return string.Concat(element.Elements().Where(e => e.Name == ns + "t" || e.Name == ns + "r")
+        var text = string.Concat(element.Elements().Where(e => e.Name == ns + "t" || e.Name == ns + "r")
             .Select(e => e.Name == ns + "t" ? e.Value : (string?)e.Element(ns + "t")));
+        return (text, element.Elements().Any(e => e.Name != ns + "t"));
     }
 
     internal static bool True(string? value) => value is "1" or "true";
