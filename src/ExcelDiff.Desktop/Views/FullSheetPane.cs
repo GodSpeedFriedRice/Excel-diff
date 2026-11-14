@@ -272,7 +272,7 @@ internal sealed class FullSheetPane : UserControl
 
         var address = merge?.ToString() ?? (pickedColumn is int onlyColumn && pickedRow is null
             ? $"{Address.Column(onlyColumn)} 列" : Address.Format(pickedRow, pickedColumn));
-        Picked?.Invoke(new CellPick(address, SheetPreview.Display(cell, date1904), cell?.Formula, mark?.Indices ?? []));
+        Picked?.Invoke(new CellPick(address, PreviewText.Display(cell, date1904), cell?.Formula, mark?.Indices ?? []));
     }
 
     internal sealed record CellPick(string Address, string Value, string? Formula, IReadOnlyList<int> DifferenceIndices);

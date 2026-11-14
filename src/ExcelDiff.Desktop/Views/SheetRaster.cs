@@ -1,7 +1,7 @@
 using System.Drawing.Imaging;
 using System.Globalization;
 using ExcelDiff.Core.Workbooks;
-using PreviewCell = ExcelDiff.Desktop.Views.SheetPreview.PreviewCell;
+using PreviewCell = ExcelDiff.Desktop.Views.PreviewText.PreviewCell;
 
 namespace ExcelDiff.Desktop.Views;
 
@@ -18,6 +18,7 @@ internal sealed class SheetRaster : IDisposable
     private readonly Dictionary<(string Name, float Size, FontStyle Style), Font> fonts = [];
     private readonly Dictionary<int, int[]> occupiedRows = [];
     private readonly PreviewStyles styles = new();
+    private readonly PreviewPictures pictures;
 
     internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904, bool showGridlines)
     {
@@ -29,12 +30,13 @@ internal sealed class SheetRaster : IDisposable
             CultureInfo.InvariantCulture, out var percent) && double.IsFinite(percent) ? Math.Clamp(percent, 25, 400) / 100 : 1;
         Rows = new PreviewAxis(sheet, rows: true, zoom);
         Columns = new PreviewAxis(sheet, rows: false, zoom);
+        pictures = new PreviewPictures(sheet, Rows, Columns, zoom);
         var (lastRow, lastColumn) = sheet.UsedCellExtent ?? (sheet.Rows.Keys.DefaultIfEmpty().Max(),
             sheet.Rows.Values.SelectMany(cells => cells.Keys).DefaultIfEmpty().Max());
         var mergedRow = sheet.Merges.Ranges.Select(range => range.LastRow).DefaultIfEmpty().Max();
         var mergedColumn = sheet.Merges.Ranges.Select(range => range.LastColumn).DefaultIfEmpty().Max();
-        LastRow = Math.Min(Rows.Limit, Math.Max(30, Math.Max(Rows.LastSized, Math.Max(lastRow, mergedRow)) + 16));
-        LastColumn = Math.Min(Columns.Limit, Math.Max(18, Math.Max(Columns.LastSized, Math.Max(lastColumn, mergedColumn)) + 8));
+        LastRow = Math.Min(Rows.Limit, Math.Max(30, Math.Max(pictures.LastRow, Math.Max(Rows.LastSized, Math.Max(lastRow, mergedRow))) + 16));
+        LastColumn = Math.Min(Columns.Limit, Math.Max(18, Math.Max(pictures.LastColumn, Math.Max(Columns.LastSized, Math.Max(lastColumn, mergedColumn))) + 8));
     }
 
     internal PreviewAxis Rows { get; }
@@ -85,7 +87,7 @@ internal sealed class SheetRaster : IDisposable
                     else if (showGridlines)
                         graphics.DrawRectangle(pen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
                 }
-                var value = SheetPreview.Display(cell, date1904);
+                var value = PreviewText.Display(cell, date1904);
                 if (value.Length == 0) return;
                 var horizontal = format.GetValueOrDefault("配置/horizontal") switch
                 {
@@ -99,7 +101,7 @@ internal sealed class SheetRaster : IDisposable
                     "top" => StringAlignment.Near, "center" => StringAlignment.Center, _ => StringAlignment.Far
                 };
                 text.Add(new PreviewCell(bounds, spill, value, GetFont(format),
-                    style.Foreground, style.Background, horizontal, vertical,
+                    style.Foreground, horizontal, vertical,
                     format.GetValueOrDefault("配置/wrapText") == "1", format.GetValueOrDefault("配置/shrinkToFit") == "1"));
             }
 
@@ -183,9 +185,10 @@ internal sealed class SheetRaster : IDisposable
                 }
             }
             foreach (var cell in text)
-                SheetPreview.PaintText(graphics, cell, brush);
+                PreviewText.PaintText(graphics, cell, brush);
             foreach (var border in borders)
                 if (border.Bounds.IntersectsWith(tileBounds)) border.Draw(graphics, pen);
+            pictures.Draw(graphics, originX, originY, TileSize);
             return bitmap;
         }
         catch
@@ -233,10 +236,10 @@ internal sealed class SheetRaster : IDisposable
         var size = float.TryParse(format.GetValueOrDefault("フォント/sz/val"), CultureInfo.InvariantCulture, out var points) &&
             float.IsFinite(points) ? points : defaultFont.Size;
         var style = FontStyle.Regular;
-        if (SheetPreview.FontFlag(format, "b")) style |= FontStyle.Bold;
-        if (SheetPreview.FontFlag(format, "i")) style |= FontStyle.Italic;
-        if (SheetPreview.FontFlag(format, "u")) style |= FontStyle.Underline;
-        if (SheetPreview.FontFlag(format, "strike")) style |= FontStyle.Strikeout;
+        if (PreviewText.FontFlag(format, "b")) style |= FontStyle.Bold;
+        if (PreviewText.FontFlag(format, "i")) style |= FontStyle.Italic;
+        if (PreviewText.FontFlag(format, "u")) style |= FontStyle.Underline;
+        if (PreviewText.FontFlag(format, "strike")) style |= FontStyle.Strikeout;
         var key = (name, (float)Math.Clamp(size * zoom, 2, 120), style);
         if (fonts.TryGetValue(key, out var font)) return font;
         try { font = new Font(key.name, key.Item2, key.style); }

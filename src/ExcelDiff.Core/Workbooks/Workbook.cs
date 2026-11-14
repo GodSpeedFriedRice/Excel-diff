@@ -18,6 +18,7 @@ public sealed record Sheet(string Name, string Visibility,
 
     public (int Row, int Column)? UsedCellExtent { get; init; }
     public string? XmlPartPath { get; init; }
+    public IReadOnlyList<SheetPicture> Pictures { get; init; } = [];
 
     public Cell? At(int row, int column) =>
         Rows.TryGetValue(row, out var cells) ? cells.GetValueOrDefault(column) : null;

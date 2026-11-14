@@ -14,7 +14,18 @@ dotnet run --project src/ExcelDiff.Desktop
 2. 左に [samples/before](samples/before)、右に [samples/after](samples/after) を指定して「比較」を押す。
 3. 結果のファイル行をダブルクリックして詳細を開く。全体プレビューは A1 から始まり、Ctrl+↑ / Ctrl+↓ で差分をたどれる。
 
-サンプルはすべて架空データ。同名の Excel ファイルが左右に6冊ずつあり、見積書の明細追加、工程表の行削除、5,000行目付近の在庫数量変更などを試せる。
+サンプルはすべて架空データ。同名の Excel ファイルが左右に7冊ずつあり、見積書の明細追加、工程表の行削除、5,000行目付近の在庫数量変更、納品確認書の印鑑画像などを試せる。
+
+## プレビューの画像サイズ
+
+シート上の PNG・JPEG は、プレビュー用画像の長辺を既定で 512 px に抑え、Excel 上の配置サイズで表示する。必要に応じて、起動前に環境変数 `EXCEL_DIFF_IMAGE_MAX_EDGE` を 1～2048 の整数で設定できる。
+
+```powershell
+$env:EXCEL_DIFF_IMAGE_MAX_EDGE = '768'
+dotnet run --project src/ExcelDiff.Desktop
+```
+
+表示できない貼り付け画像は枠で示す。画像そのものの差分判定は対象外。
 
 ## 設計資料
 

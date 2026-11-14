@@ -35,8 +35,8 @@ internal sealed class WorkbookView : UserControl
         Dock = DockStyle.Fill, Height = 63, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Vertical, BackColor = Color.White, AccessibleName = "全体プレビューで選択したセル"
     };
-    private readonly SheetPreview leftPreview = new();
-    private readonly SheetPreview rightPreview = new();
+    private readonly FullSheetPane leftPreview = new();
+    private readonly FullSheetPane rightPreview = new();
     private readonly TableLayoutPanel listLayout = Appearance.Stack();
     private readonly TableLayoutPanel previews;
 
@@ -98,7 +98,7 @@ internal sealed class WorkbookView : UserControl
         {
             if (updating || views.SelectedTab != list) return;
             differenceIndex = differences.CurrentCell?.RowIndex ?? -1;
-            UpdateSelection();
+            UpdateSelection(reveal: true);
         };
 
         previews = Split(Pane("左 ・ 変更前", leftPath, leftPreview), Pane("右 ・ 変更後", rightPath, rightPreview));
@@ -116,10 +116,16 @@ internal sealed class WorkbookView : UserControl
         full.Controls.Add(fullLayout);
         leftFull.Scrolled += rightFull.ScrollBy;
         rightFull.Scrolled += leftFull.ScrollBy;
+        leftPreview.Scrolled += rightPreview.ScrollBy;
+        rightPreview.Scrolled += leftPreview.ScrollBy;
         leftFull.ZoomRequested += ZoomFull;
         rightFull.ZoomRequested += ZoomFull;
+        leftPreview.ZoomRequested += ZoomList;
+        rightPreview.ZoomRequested += ZoomList;
         leftFull.Picked += pick => SelectPreviewCell(pick, before: true);
         rightFull.Picked += pick => SelectPreviewCell(pick, before: false);
+        leftPreview.Picked += pick => SelectPreviewCell(pick, before: true);
+        rightPreview.Picked += pick => SelectPreviewCell(pick, before: false);
         views.TabPages.AddRange([full, list, xml]);
         views.SelectedTab = full;
         Appearance.Row(layout, views, fill: true);
@@ -129,7 +135,7 @@ internal sealed class WorkbookView : UserControl
         views.SelectedIndexChanged += (_, _) =>
         {
             if (views.SelectedTab == list && differences.RowCount > 0)
-                SelectDifference(Math.Max(0, differenceIndex));
+                SelectDifference(Math.Max(0, differenceIndex), reveal: true);
             else
                 UpdateSelection();
             UpdateZoomIndicator();
@@ -173,7 +179,7 @@ internal sealed class WorkbookView : UserControl
             listLayout.RowStyles[2].Height = options.ShowNearby ? 44 : 0;
         }
         if (options.UseSavedZoom != previous.UseSavedZoom || views.SelectedTab == list && options.ShowNearby != previous.ShowNearby)
-            UpdateSelection();
+            UpdateSelection(reveal: options.ShowNearby && !previous.ShowNearby);
     }
 
     private void ZoomList(int delta)
@@ -196,7 +202,8 @@ internal sealed class WorkbookView : UserControl
         finally { differences.ResumeLayout(); }
         previous?.Dispose();
         UpdateZoomIndicator();
-        if (views.SelectedTab == list) UpdateSelection();
+        leftPreview.SetZoom(listZoom.Scale);
+        rightPreview.SetZoom(listZoom.Scale);
     }
 
     private void ZoomFull(int delta)
@@ -247,14 +254,7 @@ internal sealed class WorkbookView : UserControl
         var pane = Appearance.Stack();
         var label = Appearance.Label($"{title}　{Path.GetFileName(path)}");
         Appearance.Row(pane, label);
-        if (preview is SheetPreview)
-        {
-            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White };
-            scroll.Controls.Add(preview);
-            Appearance.Row(pane, scroll, fill: true);
-        }
-        else
-            Appearance.Row(pane, preview, fill: true);
+        Appearance.Row(pane, preview, fill: true);
         return pane;
     }
 
@@ -307,7 +307,7 @@ internal sealed class WorkbookView : UserControl
         }
         differences.Invalidate();
         updating = false;
-        UpdateSelection();
+        UpdateSelection(reveal: views.SelectedTab == list);
         StatusChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -339,18 +339,21 @@ internal sealed class WorkbookView : UserControl
     private void SelectPreviewCell(FullSheetPane.CellPick pick, bool before)
     {
         if (Current is not SheetDiff sheet) return;
+        var nearby = views.SelectedTab == list;
+        var details = nearby ? detail : fullDetails;
         if (pick.DifferenceIndices.Count > 0)
         {
             SelectDifference(pick.DifferenceIndices[0]);
-            fullDetails.Text = string.Join(Environment.NewLine + Environment.NewLine,
+            details.Text = string.Join(Environment.NewLine + Environment.NewLine,
                 pick.DifferenceIndices.Select(index => DescribeDifference(sheet.Differences[index])));
             return;
         }
-        (before ? rightFull : leftFull).ClearSelection();
+        var opposite = nearby ? (before ? rightPreview : leftPreview) : (before ? rightFull : leftFull);
+        opposite.ClearSelection();
         var side = before ? "左" : "右";
         var value = pick.Value.Length > 0 ? $"　{pick.Value}" : "";
         var formula = pick.Formula is null ? "" : $"{Environment.NewLine}数式　={pick.Formula}";
-        fullDetails.Text = $"{side}　{pick.Address}{value}{formula}";
+        details.Text = $"{side}　{pick.Address}{value}{formula}";
     }
 
     private void UpdateSelection(bool reveal = false)
@@ -373,26 +376,21 @@ internal sealed class WorkbookView : UserControl
         var column = diff?.Column ?? 1;
         var leftRow = diff?.LeftRow ?? diff?.RightRow ?? 1;
         var rightRow = diff?.RightRow ?? diff?.LeftRow ?? 1;
-        if (views.SelectedTab == full)
-        {
-            fullDetails.Text = detail.Text;
-            leftFull.SetChanges(sheet?.Differences, before: true);
-            rightFull.SetChanges(sheet?.Differences, before: false);
-            var rowLayout = diff?.Kind == ChangeKind.RowLayout || diff?.Column is null && diff?.LeftRow is not null;
-            var columnLayout = diff?.Kind == ChangeKind.ColumnLayout;
-            var leftMark = diff?.LeftRow is not null || columnLayout;
-            var rightMark = diff?.RightRow is not null || columnLayout;
-            leftFull.ShowSheet(sheet?.Left, leftRow, column, diff?.LeftMerge, rowLayout, columnLayout,
-                previewOptions.UseSavedZoom, left.Date1904, reveal && diff is not null, leftMark, diff?.LayoutCount ?? 1);
-            rightFull.ShowSheet(sheet?.Right, rightRow, column, diff?.RightMerge, rowLayout, columnLayout,
-                previewOptions.UseSavedZoom, right.Date1904, reveal && diff is not null, rightMark, diff?.LayoutCount ?? 1);
-            return;
-        }
-        if (!previewOptions.ShowNearby) return;
-        leftPreview.ShowArea(sheet?.Left, leftRow, column, diff?.LeftMerge, diff?.LeftRow is not null,
-            previewOptions.UseSavedZoom, left.Date1904, listZoom.Scale);
-        rightPreview.ShowArea(sheet?.Right, rightRow, column, diff?.RightMerge, diff?.RightRow is not null,
-            previewOptions.UseSavedZoom, right.Date1904, listZoom.Scale);
+        var wholeSheet = views.SelectedTab == full;
+        if (wholeSheet) fullDetails.Text = detail.Text;
+        else if (!previewOptions.ShowNearby) return;
+        var beforePane = wholeSheet ? leftFull : leftPreview;
+        var afterPane = wholeSheet ? rightFull : rightPreview;
+        beforePane.SetChanges(sheet?.Differences, before: true);
+        afterPane.SetChanges(sheet?.Differences, before: false);
+        var rowLayout = diff?.Kind == ChangeKind.RowLayout || diff?.Column is null && diff?.LeftRow is not null;
+        var columnLayout = diff?.Kind == ChangeKind.ColumnLayout;
+        var leftMark = diff?.LeftRow is not null || columnLayout;
+        var rightMark = diff?.RightRow is not null || columnLayout;
+        beforePane.ShowSheet(sheet?.Left, leftRow, column, diff?.LeftMerge, rowLayout, columnLayout,
+            previewOptions.UseSavedZoom, left.Date1904, reveal && diff is not null, leftMark, diff?.LayoutCount ?? 1);
+        afterPane.ShowSheet(sheet?.Right, rightRow, column, diff?.RightMerge, rowLayout, columnLayout,
+            previewOptions.UseSavedZoom, right.Date1904, reveal && diff is not null, rightMark, diff?.LayoutCount ?? 1);
     }
 
 

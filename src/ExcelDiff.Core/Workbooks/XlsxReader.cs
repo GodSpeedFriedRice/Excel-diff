@@ -5,10 +5,14 @@ using System.Xml.Linq;
 
 namespace ExcelDiff.Core.Workbooks;
 
-public static class XlsxReader
+public static partial class XlsxReader
 {
-    public static Workbook Read(string path, CancellationToken token = default)
+    public static Workbook Read(string path, CancellationToken token = default) => Read(path, token, includePictures: true);
+
+    internal static Workbook Read(string path, CancellationToken token, bool includePictures)
     {
+        path = Path.GetFullPath(path);
+        var lastWriteTime = includePictures ? File.GetLastWriteTimeUtc(path) : default;
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
         var office = Part(zip, "_rels/.rels").Root!.Elements().FirstOrDefault(e => IsType(e, "officeDocument"))
@@ -38,8 +42,11 @@ public static class XlsxReader
                 (string?)e.Attribute("name") == "_xlnm.Print_Area" &&
                 (int?)e.Attribute("localSheetId") == entry.ElementsBeforeSelf().Count());
             var partPath = Resolve(workbookPath, relation);
-            sheets.Add(ReadSheet(name, (string?)entry.Attribute("state") ?? "visible",
-                Part(zip, partPath), partPath, shared, formats, area?.Value, token));
+            var sheet = ReadSheet(name, (string?)entry.Attribute("state") ?? "visible",
+                Part(zip, partPath), partPath, shared, formats, area?.Value, token);
+            if (includePictures)
+                sheet = sheet with { Pictures = ReadPictures(zip, sheet.Xml.Root!, partPath, path, stream.Length, lastWriteTime, token) };
+            sheets.Add(sheet);
         }
         return new Workbook(sheets, True((string?)book.Element(ns + "workbookPr")?.Attribute("date1904")));
     }

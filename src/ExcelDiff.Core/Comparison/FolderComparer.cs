@@ -45,8 +45,8 @@ public static class FolderComparer
 
         try
         {
-            var leftBook = XlsxReader.Read(a.FullName, token);
-            var rightBook = XlsxReader.Read(b.FullName, token);
+            var leftBook = XlsxReader.Read(a.FullName, token, includePictures: false);
+            var rightBook = XlsxReader.Read(b.FullName, token, includePictures: false);
             var sheets = WorkbookComparer.Compare(leftBook, rightBook, token: token)
                 .Select(SummarizeSheet).ToArray();
             var same = leftBook.Date1904 == rightBook.Date1904 && sheets.All(sheet => sheet.Status == FileStatus.Same);
