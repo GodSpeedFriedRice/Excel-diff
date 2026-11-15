@@ -68,7 +68,7 @@ public static class FolderComparer
     public static bool IsReadError(Exception e) => e is IOException or UnauthorizedAccessException or
         InvalidDataException or XmlException or FormatException or ArgumentException or OverflowException;
 
-    private static Dictionary<string, FileInfo> Enumerate(string root, bool recursive, CancellationToken token)
+    internal static Dictionary<string, FileInfo> Enumerate(string root, bool recursive, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var files = new Dictionary<string, FileInfo>(StringComparer.OrdinalIgnoreCase);

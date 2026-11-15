@@ -33,6 +33,7 @@ try
     CheckAxisChanges(scratch.FullName);
     CheckXmlDiff();
     MergeChecks.Run(scratch.FullName, a, Check);
+    FolderMergeChecks.Run(scratch.FullName, a, Check);
     PackageChecks.Run(scratch.FullName, a, Check);
     Check(keyed.Differences.Any(d => d is { Kind: ChangeKind.RowLayout, Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");
     Check(WorkbookComparer.Compare(left, right, 6).Single() is { UsesKey: false, KeyWarning: not null }, "空のキー列はセル番地比較に戻す");
