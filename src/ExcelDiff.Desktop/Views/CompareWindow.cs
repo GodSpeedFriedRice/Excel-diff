@@ -22,6 +22,10 @@ internal sealed class CompareWindow : Form
     };
     private readonly CancellationTokenSource closing = new();
     private readonly string recentTargetsPath;
+    private readonly string windowSettingsPath;
+    private TabPage? operationTab;
+    private CancellationTokenSource? operationCancellation;
+    private FormWindowState lastWindowState;
     private Targets? targets;
     private TabPage? targetTab;
     private IReadOnlyList<FilePair> results = [];
@@ -33,9 +37,10 @@ internal sealed class CompareWindow : Form
 
     internal CompareWindow() : this(LocalSettings.PathFor("preview-settings.json"), RecentTargets.SettingsPath) { }
 
-    internal CompareWindow(string previewSettingsPath, string recentTargetsPath)
+    internal CompareWindow(string previewSettingsPath, string recentTargetsPath, string? windowSettingsPath = null)
     {
         this.recentTargetsPath = recentTargetsPath;
+        this.windowSettingsPath = windowSettingsPath ?? LocalSettings.PathFor("window-settings.json");
         previewOptions = LocalSettings.Load<PreviewOptions>(previewSettingsPath) ?? new();
         Text = "Excel Diff";
         ClientSize = new Size(1119, 629);
@@ -142,7 +147,24 @@ internal sealed class CompareWindow : Form
         showSheets.CheckedChanged += (_, _) => RenderFiles();
         tabs.SelectedIndexChanged += (_, _) => UpdateStatus();
         tabs.CloseRequested += CloseTab;
-        FormClosed += (_, _) => closing.Cancel();
+        RestoreWindow();
+        Resize += (_, _) =>
+        {
+            if (WindowState != FormWindowState.Minimized) lastWindowState = WindowState;
+        };
+        FormClosed += (_, _) =>
+        {
+            closing.Cancel();
+            var size = WindowState == FormWindowState.Normal ? Size : RestoreBounds.Size;
+            if (size.Width > 0 && size.Height > 0)
+                LocalSettings.Save(this.windowSettingsPath, new WindowLayout(size.Width, size.Height,
+                    lastWindowState == FormWindowState.Maximized));
+        };
+        Disposed += (_, _) =>
+        {
+            if (!folderTab.IsDisposed) folderTab.Dispose();
+            closing.Dispose();
+        };
         UpdateStatus();
 
         void AddPreviewOption(string caption, bool value, Func<PreviewOptions, bool, PreviewOptions> change)
@@ -158,6 +180,20 @@ internal sealed class CompareWindow : Form
             settings.DropDownItems.Add(item);
         }
     }
+
+    private void RestoreWindow()
+    {
+        var saved = LocalSettings.Load<WindowLayout>(windowSettingsPath);
+        if (saved is null || saved.Width <= 0 || saved.Height <= 0) return;
+        var area = Screen.PrimaryScreen?.WorkingArea.Size ?? Size;
+        Size = new Size(
+            Math.Clamp(saved.Width, MinimumSize.Width, Math.Max(MinimumSize.Width, area.Width)),
+            Math.Clamp(saved.Height, MinimumSize.Height, Math.Max(MinimumSize.Height, area.Height)));
+        lastWindowState = saved.Maximized ? FormWindowState.Maximized : FormWindowState.Normal;
+        WindowState = lastWindowState;
+    }
+
+    private sealed record WindowLayout(int Width, int Height, bool Maximized);
 
     private void OpenSearch()
     {
@@ -216,7 +252,8 @@ internal sealed class CompareWindow : Form
     private async Task LoadFolder(Targets current, bool newSelection, Action<string>? showError = null)
     {
         FolderComparisonProgress? progress = null;
-        await Run(() => FolderComparer.Compare(current.Left, current.Right, current.Recursive, closing.Token,
+        await Run(newSelection ? targetTab! : folderTab,
+            token => FolderComparer.Compare(current.Left, current.Right, current.Recursive, token,
             update => Volatile.Write(ref progress, update)), rows =>
         {
             if (newSelection)
@@ -239,11 +276,11 @@ internal sealed class CompareWindow : Form
     private async Task LoadBook(string left, string right, Targets? newSelection, TabPage? replace = null, string? sheet = null,
         Action<string>? showError = null)
     {
-        await Run(() =>
+        await Run(newSelection is not null ? targetTab! : replace ?? folderTab, token =>
         {
-            var a = XlsxReader.Read(left, closing.Token);
-            var b = XlsxReader.Read(right, closing.Token);
-            return (a, b, Diff: WorkbookComparer.Compare(a, b, token: closing.Token));
+            var a = XlsxReader.Read(left, token);
+            var b = XlsxReader.Read(right, token);
+            return (a, b, Diff: WorkbookComparer.Compare(a, b, token: token));
         }, result =>
         {
             if (newSelection is not null)
@@ -287,10 +324,14 @@ internal sealed class CompareWindow : Form
         await LoadBook(a.FullName, b.FullName, null, sheet: selected.Sheet?.Name);
     }
 
-    private async Task Run<T>(Func<T> operation, Action<T> completed, Func<FolderComparisonProgress?>? folderProgress = null,
+    private async Task Run<T>(TabPage owner, Func<CancellationToken, T> operation, Action<T> completed,
+        Func<FolderComparisonProgress?>? folderProgress = null,
         Action<string>? showError = null)
     {
         if (busy) return;
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(closing.Token);
+        operationTab = owner;
+        operationCancellation = request;
         busy = true;
         UseWaitCursor = true;
         showSheets.Enabled = false;
@@ -306,13 +347,13 @@ internal sealed class CompareWindow : Form
         }
         try
         {
-            var result = await Task.Run(operation, closing.Token);
-            if (!IsDisposed) completed(result);
+            var result = await Task.Run(() => operation(request.Token), request.Token);
+            if (!IsDisposed && !request.IsCancellationRequested) completed(result);
         }
-        catch (OperationCanceledException) when (closing.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
         catch (Exception e) when (FolderComparer.IsReadError(e))
         {
-            if (!IsDisposed)
+            if (!IsDisposed && !request.IsCancellationRequested)
             {
                 if (showError is not null) showError(e.Message);
                 else MessageBox.Show(this, e.Message, "比較できません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -321,6 +362,8 @@ internal sealed class CompareWindow : Form
         finally
         {
             progressTimer?.Stop();
+            operationTab = null;
+            operationCancellation = null;
             busy = false;
             if (!IsDisposed)
             {
@@ -466,15 +509,18 @@ internal sealed class CompareWindow : Form
 
     private void CloseTab(TabPage? page)
     {
-        if (!ComparisonTabs.CanClose(page) || !tabs.TabPages.Contains(page!)) return;
-        if (page == targetTab)
+        if (page is null || !tabs.TabPages.Contains(page)) return;
+        if (page == operationTab) operationCancellation?.Cancel();
+        if (page == targetTab) targetTab = null;
+        if (page == folderTab)
         {
-            if (busy && page!.Tag is TargetSelection { Enabled: false }) return;
-            targetTab = null;
+            tabs.TabPages.Remove(page);
+            results = [];
+            searchBar.Visible = false;
+            searchText.Clear();
+            fileList.Rows.Clear();
         }
-        var wasSelected = tabs.SelectedTab == page;
-        page!.Dispose();
-        if (wasSelected && tabs.TabCount == 1 && tabs.TabPages.Contains(folderTab)) tabs.SelectedTab = folderTab;
+        else page.Dispose();
         UpdateStatus();
     }
 
@@ -487,6 +533,7 @@ internal sealed class CompareWindow : Form
 
     private void UpdateStatus()
     {
+        tabs.Visible = tabs.TabCount > 0;
         var folder = tabs.SelectedTab == folderTab;
         find.Enabled = tabs.TabPages.Contains(folderTab);
         showSame.Enabled = folder;

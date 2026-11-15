@@ -21,8 +21,6 @@ internal sealed class ComparisonTabs : TabControl
 
     internal event Action<TabPage>? CloseRequested;
 
-    internal static bool CanClose(TabPage? page) => page?.Tag is WorkbookView or TargetSelection or MergeView;
-
     protected override void OnDrawItem(DrawItemEventArgs e)
     {
         if (e.Index < 0 || e.Index >= TabCount) return;
@@ -32,13 +30,11 @@ internal sealed class ComparisonTabs : TabControl
         using var background = new SolidBrush(selected ? Color.White : Theme.Panel);
         e.Graphics.FillRectangle(background, bounds);
         var close = CloseBounds(bounds);
-        var label = Rectangle.FromLTRB(bounds.Left + 8, bounds.Top,
-            CanClose(page) ? close.Left - 4 : bounds.Right - 6, bounds.Bottom);
+        var label = Rectangle.FromLTRB(bounds.Left + 8, bounds.Top, close.Left - 4, bounds.Bottom);
         TextRenderer.DrawText(e.Graphics, page.Text, Font, label, Theme.Ink,
             TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        if (CanClose(page))
-            TextRenderer.DrawText(e.Graphics, "×", Font, close, Theme.Ink,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(e.Graphics, "×", Font, close, Theme.Ink,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -101,7 +97,7 @@ internal sealed class ComparisonTabs : TabControl
         if (e.Button != MouseButtons.Middle) return;
         for (var index = 0; index < TabCount; index++)
         {
-            if (!CanClose(TabPages[index]) || !GetTabRect(index).Contains(e.Location)) continue;
+            if (!GetTabRect(index).Contains(e.Location)) continue;
             CloseRequested?.Invoke(TabPages[index]);
             return;
         }
@@ -110,7 +106,7 @@ internal sealed class ComparisonTabs : TabControl
     private TabPage? CloseAt(Point point)
     {
         for (var index = 0; index < TabCount; index++)
-            if (CanClose(TabPages[index]) && CloseBounds(GetTabRect(index)).Contains(point))
+            if (CloseBounds(GetTabRect(index)).Contains(point))
                 return TabPages[index];
         return null;
     }
