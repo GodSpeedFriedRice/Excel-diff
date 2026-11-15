@@ -37,6 +37,19 @@ public sealed class WorkbookMergePlan
     public IReadOnlyList<MergeNotice> Notices { get; }
     public IReadOnlyList<PackagePartMergeDifference> PartChanges { get; }
 
+    public Workbook?[] ReadPreview(CancellationToken token = default)
+    {
+        var books = new Workbook?[inputs.Length];
+        for (var i = 0; i < inputs.Length; i++)
+        {
+            var input = inputs[i];
+            using var stream = input.Open();
+            input.Verify(stream, token);
+            books[i] = XlsxReader.Read(input.Path, token);
+        }
+        return books;
+    }
+
     public void Save(string path, IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices, CancellationToken token = default)
     {
         var output = WorkbookMerger.XlsxPath(path);

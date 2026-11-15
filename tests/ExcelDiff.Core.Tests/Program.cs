@@ -32,6 +32,7 @@ try
     CheckMergedCells(left.Sheets[0]);
     CheckAxisChanges(scratch.FullName);
     CheckXmlDiff();
+    CheckThreeWayXml();
     MergeChecks.Run(scratch.FullName, a, Check);
     FolderMergeChecks.Run(scratch.FullName, a, Check);
     PackageChecks.Run(scratch.FullName, a, Check);
@@ -97,6 +98,29 @@ finally
 static void Check(bool result, string name)
 {
     if (!result) throw new InvalidOperationException(name);
+}
+
+static void CheckThreeWayXml()
+{
+    var original = System.Xml.Linq.XDocument.Parse("<root><a>base</a><b/><c/></root>");
+    var production = System.Xml.Linq.XDocument.Parse("<root><a>production</a><b/><c/><d/></root>");
+    var incoming = System.Xml.Linq.XDocument.Parse("<root><a>incoming</a><b/><e/><c/></root>");
+    var ours = XmlLineDiff.Compare(original, production);
+    var theirs = XmlLineDiff.Compare(original, incoming);
+    var rows = ThreeWayXmlDiff.Align(ours, theirs);
+    Check(rows.Any(row => row.Base?.Text.Contains(">base<") == true &&
+        row.Production?.Text.Contains(">production<") == true && row.Incoming?.Text.Contains(">incoming<") == true),
+        "同じベース行の両側の変更を1行に揃える");
+    Check(rows.Any(row => row is { Base: null, Production: null, Incoming.Kind: XmlLineKind.Added } &&
+        row.Incoming.Text.Contains("<e")) &&
+        rows.Any(row => row is { Base: null, Production.Kind: XmlLineKind.Added, Incoming: null } &&
+        row.Production.Text.Contains("<d")), "片側だけの追加は他の列を空白にする");
+    var missing = ThreeWayXmlDiff.Align(XmlLineDiff.Compare(original, null), XmlLineDiff.Compare(original, original));
+    Check(missing.Count == 5 && missing.All(row => row.Production is null && row.Base?.Before == row.Incoming?.After),
+        "片側のXML部品が削除された場合も残りの版を揃える");
+    var added = ThreeWayXmlDiff.Align(XmlLineDiff.Compare(null, production), XmlLineDiff.Compare(null, incoming));
+    Check(added.Count > 0 && added.All(row => row.Base is null) && added.Any(row => row.Production is not null && row.Incoming is not null),
+        "共通ベースにないXML部品を表示する");
 }
 
 static void CheckMergedCells(Sheet template)

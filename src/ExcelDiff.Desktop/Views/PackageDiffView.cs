@@ -6,6 +6,7 @@ internal sealed class PackageDiffView : UserControl
 {
     private readonly DataGridView parts = Appearance.Grid();
     private readonly XmlDiffView xml = new();
+    private readonly ThreeWayXmlView? tripleXml;
     private readonly Label summary = Appearance.Label("");
     private readonly ComboBox comparedSide = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 154 };
     private readonly TextBox details = new()
@@ -22,12 +23,14 @@ internal sealed class PackageDiffView : UserControl
     private string[] paths = [];
     private bool loaded;
     private bool updating;
+    private bool showThreeWay;
 
     internal PackageDiffView(string? beforePath = null, string? afterPath = null)
     {
         this.beforePath = beforePath;
         this.afterPath = afterPath;
         threeWay = beforePath is null;
+        if (threeWay) tripleXml = new ThreeWayXmlView { Visible = false };
         Dock = DockStyle.Fill;
         var layout = Appearance.Stack();
         var header = Appearance.Toolbar();
@@ -67,7 +70,10 @@ internal sealed class PackageDiffView : UserControl
         panes.Controls.Add(parts, 0, 0);
         var detailPane = Appearance.Stack();
         Appearance.Row(detailPane, details);
-        Appearance.Row(detailPane, xml, fill: true);
+        var code = new Panel { Dock = DockStyle.Fill };
+        code.Controls.Add(xml);
+        if (tripleXml is not null) code.Controls.Add(tripleXml);
+        Appearance.Row(detailPane, code, fill: true);
         panes.Controls.Add(detailPane, 0, 1);
         Appearance.Row(layout, panes, fill: true);
         Controls.Add(layout);
@@ -75,8 +81,20 @@ internal sealed class PackageDiffView : UserControl
         VisibleChanged += (_, _) =>
         {
             if (Visible) ShowPart();
-            else xml.Clear();
+            else
+            {
+                xml.Clear();
+                tripleXml?.Clear();
+            }
         };
+    }
+
+    internal void SetThreeWay(bool enabled)
+    {
+        if (!threeWay || showThreeWay == enabled) return;
+        showThreeWay = enabled;
+        comparedSide.Visible = !enabled;
+        ShowPart();
     }
 
     private void AddColumn(string title, int width)
@@ -116,13 +134,6 @@ internal sealed class PackageDiffView : UserControl
         var both = changes.Count(change => change.Status == PackagePartMergeStatus.BothChanged);
         SetRows(changes.Count, changes.Count == 0 ? "部品に差分はありません。" :
             $"変更のある部品 {changes.Count} 件　両側で別の変更 {both} 件");
-    }
-
-    internal void ResetMerge()
-    {
-        triples = [];
-        paths = [];
-        SetRows(0, "3冊を解析すると、ここに部品差分が表示されます。");
     }
 
     private void SetRows(int count, string message)
@@ -176,12 +187,26 @@ internal sealed class PackageDiffView : UserControl
         if (updating || !Visible) return;
         xml.Clear();
         xml.Visible = false;
+        if (tripleXml is not null)
+        {
+            tripleXml.Clear();
+            tripleXml.Visible = false;
+        }
         details.Clear();
         if (parts.CurrentRow is not { } row) return;
         if (threeWay && row.Index < triples.Count)
         {
             var item = triples[row.Index];
             details.Lines = [Describe("共通ベース", item.Base), Describe("本番版", item.Production), Describe("取り込み元", item.Incoming)];
+            if (showThreeWay && tripleXml is not null)
+            {
+                if (item.Base?.IsXml != false && item.Production?.IsXml != false && item.Incoming?.IsXml != false)
+                {
+                    tripleXml.Visible = true;
+                    tripleXml.ShowPart(paths, item);
+                }
+                return;
+            }
             var (left, right, leftPart, rightPart) = comparedSide.SelectedIndex switch
             {
                 0 => (0, 1, item.Base, item.Production),

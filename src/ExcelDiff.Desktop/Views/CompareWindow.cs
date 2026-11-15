@@ -67,6 +67,7 @@ internal sealed class CompareWindow : Form
         AddPreviewOption("周辺を表示", previewOptions.ShowNearby, (current, enabled) => current with { ShowNearby = enabled });
         AddPreviewOption("保存倍率を使う", previewOptions.UseSavedZoom, (current, enabled) => current with { UseSavedZoom = enabled });
         AddPreviewOption("グリッド線を表示", previewOptions.ShowGridlines, (current, enabled) => current with { ShowGridlines = enabled });
+        AddPreviewOption("3方向マージで3列表示", previewOptions.ShowThreeWay, (current, enabled) => current with { ShowThreeWay = enabled });
         menu.Items.AddRange([file, view, settings]);
         MainMenuStrip = menu;
         Appearance.Row(layout, menu);
@@ -174,7 +175,10 @@ internal sealed class CompareWindow : Form
             {
                 previewOptions = change(previewOptions, item.Checked);
                 foreach (TabPage page in tabs.TabPages)
+                {
                     if (page.Tag is WorkbookView workbook) workbook.SetPreviewOptions(previewOptions);
+                    if (page.Tag is MergeBookView detail) detail.SetPreviewOptions(previewOptions);
+                }
                 LocalSettings.Save(previewSettingsPath, previewOptions);
             };
             settings.DropDownItems.Add(item);
@@ -499,6 +503,8 @@ internal sealed class CompareWindow : Form
         if (page is null)
         {
             var merge = new MergeView();
+            merge.OpenRequested += OpenMergeBook;
+            merge.ResultsCleared += CloseMergeBooks;
             page = new TabPage("3方向マージ") { Tag = merge };
             page.Controls.Add(merge);
             tabs.TabPages.Add(page);
@@ -507,9 +513,37 @@ internal sealed class CompareWindow : Form
         UpdateStatus();
     }
 
+    private void OpenMergeBook(MergeView owner, FolderMergeBook book, bool preview)
+    {
+        var page = tabs.TabPages.Cast<TabPage>().FirstOrDefault(item => item.Tag is MergeBookView detail &&
+            detail.Owner == owner && detail.Book == book);
+        if (page is null)
+        {
+            var detail = new MergeBookView(owner, book, owner.ChoicesFor(book), previewOptions);
+            owner.BusyChanged += detail.SetLocked;
+            detail.Disposed += (_, _) => owner.BusyChanged -= detail.SetLocked;
+            page = new TabPage(Path.GetFileName(book.RelativePath)) { Tag = detail, ToolTipText = book.RelativePath };
+            page.Controls.Add(detail);
+            tabs.TabPages.Add(page);
+        }
+        tabs.SelectedTab = page;
+        if (preview) ((MergeBookView)page.Tag!).OpenPreview();
+        UpdateStatus();
+    }
+
+    private void CloseMergeBooks(MergeView owner)
+    {
+        foreach (var page in tabs.TabPages.Cast<TabPage>().Where(page => page.Tag is MergeBookView detail &&
+                     detail.Owner == owner).ToArray())
+            page.Dispose();
+    }
+
     private void CloseTab(TabPage? page)
     {
         if (page is null || !tabs.TabPages.Contains(page)) return;
+        if (page.Tag is MergeView merge) CloseMergeBooks(merge);
+        if (page.Tag is MergeBookView detail && tabs.SelectedTab == page)
+            tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().FirstOrDefault(item => item.Tag == detail.Owner);
         if (page == operationTab) operationCancellation?.Cancel();
         if (page == targetTab) targetTab = null;
         if (page == folderTab)
@@ -528,7 +562,8 @@ internal sealed class CompareWindow : Form
     {
         targetTab = null;
         tabs.TabPages.Remove(folderTab);
-        foreach (var page in tabs.TabPages.Cast<TabPage>().Where(page => page.Tag is not MergeView).ToArray()) page.Dispose();
+        foreach (var page in tabs.TabPages.Cast<TabPage>().Where(page => page.Tag is not (MergeView or MergeBookView)).ToArray())
+            page.Dispose();
     }
 
     private void UpdateStatus()
@@ -543,6 +578,7 @@ internal sealed class CompareWindow : Form
         {
             WorkbookView => "ファイル比較 — Excel Diff",
             MergeView => "3方向マージ — Excel Diff",
+            MergeBookView detail => $"{detail.Book.RelativePath} — 3方向マージ",
             _ => folder ? "フォルダ比較 — Excel Diff" : "Excel Diff"
         };
         if (!folder)

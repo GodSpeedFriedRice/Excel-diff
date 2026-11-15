@@ -133,6 +133,10 @@ internal sealed class FullSheetPane : UserControl
 
     internal void ScrollBy(int rows, int columns) => SetPosition(row + rows, column + columns);
 
+    internal int TopRow => row;
+    internal int LeftColumn => column;
+    internal void ScrollTo(int top, int left) => SetPosition(top, left);
+
     private void SetPosition(int top, int left)
     {
         moving = true;
