@@ -21,6 +21,7 @@ internal sealed class MergeView : UserControl
     private readonly Button open;
     private readonly Button preview;
     private readonly TableLayoutPanel paths;
+    private readonly string recentTargetsPath;
     private readonly Dictionary<string, Dictionary<MergeCellAddress, MergeChoice>> choices = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> conflicts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> review = new(StringComparer.OrdinalIgnoreCase);
@@ -36,8 +37,11 @@ internal sealed class MergeView : UserControl
     internal event Action<MergeView>? ResultsCleared;
     internal event Action<bool>? BusyChanged;
 
-    internal MergeView()
+    internal MergeView() : this(LocalSettings.PathFor("last-merge.json")) { }
+
+    internal MergeView(string recentTargetsPath)
     {
+        this.recentTargetsPath = recentTargetsPath;
         Dock = DockStyle.Fill;
         var layout = Appearance.Stack();
         paths = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, BackColor = Appearance.Panel };
@@ -95,6 +99,15 @@ internal sealed class MergeView : UserControl
         Appearance.Row(layout, fileList, fill: true);
         Appearance.Row(layout, notice);
         Controls.Add(layout);
+        if (LocalSettings.Load<MergeTargets>(recentTargetsPath) is { } previous &&
+            !string.IsNullOrWhiteSpace(previous.Base) && !string.IsNullOrWhiteSpace(previous.Production) &&
+            !string.IsNullOrWhiteSpace(previous.Incoming))
+        {
+            basePath.Text = previous.Base;
+            productionPath.Text = previous.Production;
+            incomingPath.Text = previous.Incoming;
+            folders.Checked = previous.Folders;
+        }
         foreach (var box in new[] { basePath, productionPath, incomingPath })
             box.TextChanged += (_, _) => ResetInputs();
         folders.CheckedChanged += (_, _) => ResetInputs();
@@ -152,15 +165,16 @@ internal sealed class MergeView : UserControl
 
     private async Task Analyze()
     {
-        var original = ReadPath(basePath);
-        var production = ReadPath(productionPath);
-        var incoming = ReadPath(incomingPath);
+        var compareFolders = folders.Checked;
         var token = lifetime.Token;
         ResetPlan();
-        SetBusy(true, folders.Checked ? "3つのフォルダを比較しています…" : "3冊のセル内容を比較しています…");
+        SetBusy(true, compareFolders ? "3つのフォルダを比較しています…" : "3冊のセル内容を比較しています…");
         try
         {
-            if (folders.Checked)
+            var original = Path.GetFullPath(ReadPath(basePath));
+            var production = Path.GetFullPath(ReadPath(productionPath));
+            var incoming = Path.GetFullPath(ReadPath(incomingPath));
+            if (compareFolders)
             {
                 FolderComparisonProgress? progress = null;
                 using var timer = new System.Windows.Forms.Timer { Interval = 150 };
@@ -182,12 +196,15 @@ internal sealed class MergeView : UserControl
                 if (IsDisposed || token.IsCancellationRequested) return;
                 LoadBooks([new(Path.GetFileName(production), original, production, incoming, result, null)]);
             }
+            LocalSettings.Save(recentTargetsPath, new MergeTargets(original, production, incoming, compareFolders));
             ShowInputs(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) when (FolderComparer.IsReadError(error)) { if (!IsDisposed) summary.Text = error.Message; }
         finally { if (!IsDisposed) SetBusy(false); }
     }
+
+    private sealed record MergeTargets(string Base, string Production, string Incoming, bool Folders);
 
     private void LoadBooks(IReadOnlyList<FolderMergeBook> result)
     {
