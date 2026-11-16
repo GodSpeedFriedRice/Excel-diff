@@ -26,7 +26,7 @@ internal sealed class ThreeWayXmlView : UserControl
         grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
         grid.ScrollBars = ScrollBars.Vertical;
         grid.AccessibleName = "3方向のXML差分";
-        foreach (var title in new[] { "共通ベース", "本番版", "取り込み元" })
+        foreach (var title in new[] { "共通ベース", "取り込み1", "取り込み2" })
         {
             grid.Columns.Add(new DataGridViewTextBoxColumn { Width = 46, SortMode = DataGridViewColumnSortMode.NotSortable });
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title,

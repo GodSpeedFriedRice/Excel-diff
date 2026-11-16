@@ -40,7 +40,7 @@ internal sealed class PackageDiffView : UserControl
         if (threeWay)
         {
             comparedSide.AccessibleName = "XMLの比較対象";
-            comparedSide.Items.AddRange(["共通ベース ↔ 本番版", "共通ベース ↔ 取り込み元", "本番版 ↔ 取り込み元"]);
+            comparedSide.Items.AddRange(["共通ベース ↔ 取り込み1", "共通ベース ↔ 取り込み2", "取り込み1 ↔ 取り込み2"]);
             comparedSide.SelectedIndex = 1;
             comparedSide.Margin = new Padding(6, 7, 6, 4);
             comparedSide.SelectedIndexChanged += (_, _) => ShowPart();
@@ -54,8 +54,8 @@ internal sealed class PackageDiffView : UserControl
         AddColumn("部品のパス", threeWay ? 47 : 65);
         if (threeWay)
         {
-            AddColumn("本番版", 13);
-            AddColumn("取り込み元", 13);
+            AddColumn("取り込み1", 13);
+            AddColumn("取り込み2", 13);
         }
         AddColumn("比較結果", 27);
         AddColumn("形式", 12);
@@ -197,8 +197,8 @@ internal sealed class PackageDiffView : UserControl
                 2 => ChangeLabel(item.IncomingChange),
                 3 => item.Status switch
                 {
-                    PackagePartMergeStatus.ProductionOnly => "本番版のみ変更",
-                    PackagePartMergeStatus.IncomingOnly => "取り込み元のみ変更",
+                    PackagePartMergeStatus.ProductionOnly => "取り込み1のみ変更",
+                    PackagePartMergeStatus.IncomingOnly => "取り込み2のみ変更",
                     PackagePartMergeStatus.SameChange => "両側で同じ変更",
                     _ => "両側で別の変更"
                 },
@@ -229,7 +229,7 @@ internal sealed class PackageDiffView : UserControl
         if (threeWay && index < triples.Count)
         {
             var item = triples[index];
-            details.Lines = [Describe("共通ベース", item.Base), Describe("本番版", item.Production), Describe("取り込み元", item.Incoming)];
+            details.Lines = [Describe("共通ベース", item.Base), Describe("取り込み1", item.Production), Describe("取り込み2", item.Incoming)];
             if (showThreeWay && tripleXml is not null)
             {
                 if (item.Base?.IsXml != false && item.Production?.IsXml != false && item.Incoming?.IsXml != false)

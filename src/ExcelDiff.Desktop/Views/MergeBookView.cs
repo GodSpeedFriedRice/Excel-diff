@@ -7,7 +7,7 @@ internal sealed class MergeBookView : UserControl
     private readonly DataGridView grid = new();
     private readonly GridSort sort;
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
-    private readonly TabPage cellTab = new("差分・競合");
+    private readonly TabPage cellTab = new("差分・コンフリクト");
     private readonly TabPage previewTab = new("全体プレビュー");
     private readonly Label status = Appearance.Label("");
     private readonly TextBox details = new()
@@ -40,17 +40,17 @@ internal sealed class MergeBookView : UserControl
         preview = new MergePreview(book);
         var layout = Appearance.Stack();
         var actions = Appearance.Toolbar();
-        useProduction = Appearance.Button("本番版を採用", () => Choose(MergeChoice.Production));
-        useIncoming = Appearance.Button("取り込み元を採用", () => Choose(MergeChoice.Incoming));
+        useProduction = Appearance.Button("取り込み1を採用", () => Choose(MergeChoice.Production));
+        useIncoming = Appearance.Button("取り込み2を採用", () => Choose(MergeChoice.Incoming));
         reveal = Appearance.Button("プレビューで表示", () => OpenPreview(Current));
         actions.Controls.AddRange([useProduction, useIncoming, reveal, status]);
         Appearance.Row(layout, actions);
         Appearance.ConfigureGrid(grid);
         grid.VirtualMode = true;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        grid.AccessibleName = "ブックのセル差分と競合";
+        grid.AccessibleName = "ブックのセル差分とコンフリクト";
         foreach (var (title, weight) in new[] { ("シート", 15), ("セル", 7), ("共通ベース", 18),
-                     ("本番版", 18), ("取り込み元", 18), ("処理", 24) })
+                     ("取り込み1", 18), ("取り込み2", 18), ("処理", 24) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight,
                 MinimumWidth = weight == 7 ? 46 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
         sort = new GridSort(grid, SortChanges);
@@ -71,15 +71,19 @@ internal sealed class MergeBookView : UserControl
         grid.CurrentCellChanged += (_, _) => UpdateActions();
         grid.CellFormatting += (_, e) =>
         {
-            if (e.ColumnIndex != 5 || e.RowIndex < 0 || e.RowIndex >= rows.Length || e.CellStyle is not { } style) return;
+            if (e.RowIndex < 0 || e.RowIndex >= rows.Length || e.CellStyle is not { } style) return;
             var change = rows[e.RowIndex];
-            style.BackColor = change.Disposition switch
+            switch (Decision(change))
             {
-                MergeDisposition.Conflict when !choices.ContainsKey(change.Cell) => Appearance.Changed,
-                MergeDisposition.TakeIncoming => Appearance.Added,
-                MergeDisposition.Unsupported => Appearance.Removed,
-                _ => Color.White
-            };
+                case DecisionState.Unresolved:
+                case DecisionState.Unsupported:
+                    style.BackColor = Appearance.MergeConflict;
+                    style.SelectionBackColor = Appearance.MergeConflictSelected;
+                    break;
+                case DecisionState.TakeIncoming when e.ColumnIndex == 5:
+                    style.BackColor = Appearance.Added;
+                    break;
+            }
         };
         var cells = Appearance.Stack();
         Appearance.Row(cells, grid, fill: true);
@@ -95,6 +99,7 @@ internal sealed class MergeBookView : UserControl
             package.SetMerge(plan.PartChanges, book.BasePath!, book.ProductionPath!, book.IncomingPath!);
         }
         else package.Dispose();
+        views.SelectedTab = cellTab;
         views.SelectedIndexChanged += (_, _) =>
         {
             if (views.SelectedTab == previewTab) preview.LoadPreview();
@@ -105,6 +110,7 @@ internal sealed class MergeBookView : UserControl
         SetPreviewOptions(options);
         grid.RowCount = rows.Length;
         if (grid.RowCount > 0) grid.CurrentCell = grid.Rows[0].Cells[0];
+        VisibleChanged += (_, _) => { if (Visible) UpdateActions(); };
         UpdateActions();
     }
 
@@ -139,7 +145,7 @@ internal sealed class MergeBookView : UserControl
         if (sort.Column == 5) SortChanges();
         else
         {
-            grid.InvalidateCell(5, grid.CurrentCell!.RowIndex);
+            grid.InvalidateRow(grid.CurrentCell!.RowIndex);
             UpdateActions();
         }
     }
@@ -168,9 +174,9 @@ internal sealed class MergeBookView : UserControl
         useProduction.Enabled = useIncoming.Enabled = !locked && views.SelectedTab == cellTab &&
             Current?.Disposition == MergeDisposition.Conflict;
         reveal.Enabled = views.SelectedTab != previewTab;
-        status.Text = $"未解決の競合 {conflicts - choices.Count} 件";
+        status.Text = $"未解決のコンフリクト {conflicts - choices.Count} 件";
         var contents = Current is { } change ? change.Reason ??
-            $"共通ベース　{change.Base}{Environment.NewLine}本番版　{change.Production}{Environment.NewLine}取り込み元　{change.Incoming}" : "";
+            $"共通ベース　{change.Base}{Environment.NewLine}取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";
         details.Text = string.Join(Environment.NewLine, new[] { notes, contents }.Where(text => text.Length > 0));
         details.Visible = details.Text.Length > 0;
     }
@@ -189,12 +195,12 @@ internal sealed class MergeBookView : UserControl
 
     private static string DecisionText(DecisionState state) => state switch
     {
-        DecisionState.KeepProduction => "本番版を保持",
+        DecisionState.KeepProduction => "取り込み1を保持",
         DecisionState.TakeIncoming => "自動取り込み",
         DecisionState.AlreadyMatches => "両側で同じ変更",
-        DecisionState.Unsupported => "対象外（本番版を保持）",
-        DecisionState.AdoptedIncoming => "取り込み元を採用",
-        DecisionState.AdoptedProduction => "本番版を採用",
-        _ => "競合・未選択"
+        DecisionState.Unsupported => "コンフリクト（手動解消）",
+        DecisionState.AdoptedIncoming => "取り込み2を採用",
+        DecisionState.AdoptedProduction => "取り込み1を採用",
+        _ => "コンフリクト・未選択"
     };
 }

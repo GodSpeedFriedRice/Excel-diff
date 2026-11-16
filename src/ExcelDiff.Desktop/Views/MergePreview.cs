@@ -33,7 +33,7 @@ internal sealed class MergePreview : UserControl
         var layout = Appearance.Stack();
         var commands = Appearance.Toolbar();
         sheets.Margin = pairs.Margin = new Padding(6, 7, 0, 4);
-        pairs.Items.AddRange(["本番版 ↔ 取り込み元", "共通ベース ↔ 本番版", "共通ベース ↔ 取り込み元"]);
+        pairs.Items.AddRange(["取り込み1 ↔ 取り込み2", "共通ベース ↔ 取り込み1", "共通ベース ↔ 取り込み2"]);
         pairs.SelectedIndex = 0;
         pairs.SelectedIndexChanged += (_, _) => SetColumns();
         sheets.SelectedIndexChanged += (_, _) =>
@@ -44,7 +44,7 @@ internal sealed class MergePreview : UserControl
         };
         commands.Controls.AddRange([sheets, pairs, status]);
         Appearance.Row(layout, commands);
-        var titles = new[] { "共通ベース", "本番版", "取り込み元" };
+        var titles = new[] { "共通ベース", "取り込み1", "取り込み2" };
         for (var i = 0; i < panes.Length; i++)
         {
             var pane = panes[i];
@@ -86,7 +86,7 @@ internal sealed class MergePreview : UserControl
                 if (book.Plan is { } plan)
                     return (Versions: plan.ReadPreview(token), Errors: Array.Empty<string>());
                 var errors = new List<string>();
-                var names = new[] { "共通ベース", "本番版", "取り込み元" };
+                var names = new[] { "共通ベース", "取り込み1", "取り込み2" };
                 var paths = new[] { book.BasePath, book.ProductionPath, book.IncomingPath };
                 var loaded = new Workbook?[paths.Length];
                 for (var i = 0; i < paths.Length; i++)
@@ -156,7 +156,7 @@ internal sealed class MergePreview : UserControl
     private void DrawSheet(bool jump = false)
     {
         if (versions is null || sheets.SelectedItem is not string name) return;
-        var titles = new[] { "共通ベース", "本番版", "取り込み元" };
+        var titles = new[] { "共通ベース", "取り込み1", "取り込み2" };
         var sheetChanges = changes.GetValueOrDefault(name) ?? [];
         for (var i = 0; i < panes.Length; i++)
         {

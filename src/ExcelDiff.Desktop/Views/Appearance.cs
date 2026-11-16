@@ -10,6 +10,8 @@ internal static class Appearance
     internal static readonly Color Changed = Color.FromArgb(255, 239, 199);
     internal static readonly Color Added = Color.FromArgb(222, 242, 232);
     internal static readonly Color Removed = Color.FromArgb(250, 230, 235);
+    internal static readonly Color MergeConflict = Color.FromArgb(255, 246, 190);
+    internal static readonly Color MergeConflictSelected = Color.FromArgb(255, 228, 126);
 
     internal static Button Button(string text, Action action, bool primary = false)
     {

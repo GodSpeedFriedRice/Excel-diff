@@ -104,8 +104,8 @@ public static class FolderMerger
             {
                 var missing = new List<string>(3);
                 if (original is null) missing.Add("共通ベース");
-                if (production is null) missing.Add("本番版");
-                if (incoming is null) missing.Add("取り込み元");
+                if (production is null) missing.Add("取り込み1");
+                if (incoming is null) missing.Add("取り込み2");
                 notice = $"ファイルなし（{string.Join("・", missing)}）。追加・削除は手動で確認してください。";
             }
             else

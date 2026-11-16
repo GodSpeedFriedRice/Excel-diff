@@ -68,7 +68,7 @@ public sealed class WorkbookMergePlan
                 case MergeDisposition.Conflict:
                     if (!choices.TryGetValue(edit.Change.Cell, out var choice) ||
                         choice is not (MergeChoice.Production or MergeChoice.Incoming))
-                        throw new InvalidOperationException("すべての競合で採用する内容を選択してください。");
+                        throw new InvalidOperationException("すべてのコンフリクトで採用する内容を選択してください。");
                     if (choice == MergeChoice.Incoming) writes.Add(edit);
                     break;
             }
@@ -137,8 +137,8 @@ public static partial class WorkbookMerger
         CancellationToken token = default)
     {
         var (baseInput, baseBook, baseParts) = Read(basePath, "共通ベース", token);
-        var (productionInput, production, productionParts) = Read(productionPath, "本番版", token);
-        var (incomingInput, incoming, incomingParts) = Read(incomingPath, "取り込み元", token);
+        var (productionInput, production, productionParts) = Read(productionPath, "取り込み1", token);
+        var (incomingInput, incoming, incomingParts) = Read(incomingPath, "取り込み2", token);
         var edits = new List<WorkbookMergePlan.Edit>();
         var notices = new List<MergeNotice>();
         var partChanges = PackageComparer.Compare(baseParts, productionParts, incomingParts, token);
@@ -161,13 +161,13 @@ public static partial class WorkbookMerger
                 if (original is not null || (destination is null) != (source is null))
                     notices.Add(new(name, "シートの追加・削除・名前変更は手動で確認してください。"));
                 else
-                    notices.Add(new(name, "両側に同名のシートが追加されています。本番版を保持します。"));
+                    notices.Add(new(name, "両側に同名のシートが追加されています。取り込み1を保持します。"));
                 continue;
             }
             if (!original.Merges.Ranges.SequenceEqual(destination.Merges.Ranges) ||
                 !original.Merges.Ranges.SequenceEqual(source.Merges.Ranges))
             {
-                notices.Add(new(name, "結合範囲が変わったシートです。本番版を保持します。"));
+                notices.Add(new(name, "結合範囲が変わったシートです。取り込み1を保持します。"));
                 continue;
             }
 
@@ -176,7 +176,7 @@ public static partial class WorkbookMerger
             var other = new MergeWorksheet(source, token);
             if (baseline.HasMovedLines(current, token) || baseline.HasMovedLines(other, token))
             {
-                notices.Add(new(name, "行・列の移動を検出しました。本番版を保持します。"));
+                notices.Add(new(name, "行・列の移動を検出しました。取り込み1を保持します。"));
                 continue;
             }
 
@@ -207,7 +207,7 @@ public static partial class WorkbookMerger
                         (theirs.Key.Kind == "formula" && ExternalBookReference().IsMatch(theirs.Key.Text)))
                     {
                         disposition = MergeDisposition.Unsupported;
-                        reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。本番版を保持します。";
+                        reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。取り込み1を保持します。";
                     }
                     else disposition = ours.Key == before.Key ? MergeDisposition.TakeIncoming : MergeDisposition.Conflict;
 
@@ -229,7 +229,7 @@ public static partial class WorkbookMerger
                         Change = edit.Change with
                         {
                             Disposition = MergeDisposition.Unsupported,
-                            Reason = "構造変更のあるブック内でシートを参照する数式です。本番版を保持します。"
+                            Reason = "構造変更のあるブック内でシートを参照する数式です。取り込み1を保持します。"
                         }
                     };
             }

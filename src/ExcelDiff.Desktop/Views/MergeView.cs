@@ -14,7 +14,7 @@ internal sealed class MergeView : UserControl
     private readonly GridSort fileSort;
     private readonly Label summary = Appearance.Label("");
     private readonly Label notice = Appearance.Label("");
-    private readonly ComboBox filter = new() { Width = 114, DropDownStyle = ComboBoxStyle.DropDownList,
+    private readonly ComboBox filter = new() { Width = 144, DropDownStyle = ComboBoxStyle.DropDownList,
         AccessibleName = "ファイルの絞り込み" };
     private readonly Button analyze;
     private readonly Button changeInputs;
@@ -26,7 +26,6 @@ internal sealed class MergeView : UserControl
     private readonly Dictionary<string, Dictionary<MergeCellAddress, MergeChoice>> choices = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> conflicts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> review = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> automatic = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<FolderMergeBook> books = [];
     private FolderMergeBook[] visible = [];
     private FolderMergePlan? folderPlan;
@@ -53,8 +52,8 @@ internal sealed class MergeView : UserControl
         folders.Margin = new Padding(6, 5, 6, 4);
         paths.Controls.Add(folders, 1, 0);
         AddPath(1, "共通ベース", basePath);
-        AddPath(2, "本番版", productionPath);
-        AddPath(3, "取り込み元", incomingPath);
+        AddPath(2, "取り込み1", productionPath);
+        AddPath(3, "取り込み2", incomingPath);
         Appearance.Row(layout, paths);
 
         var commands = Appearance.Toolbar();
@@ -63,7 +62,7 @@ internal sealed class MergeView : UserControl
         save = Appearance.Button("結果フォルダに保存…", async () => await Save());
         open = Appearance.Button("詳細を開く", () => OpenCurrent(false));
         preview = Appearance.Button("プレビュー", () => OpenCurrent(true));
-        filter.Items.AddRange(["すべて", "未解決の競合", "手動確認"]);
+        filter.Items.AddRange(["すべて", "コンフリクト", "手動解消が必要"]);
         filter.SelectedIndex = 0;
         filter.Margin = new Padding(6, 7, 0, 4);
         filter.SelectedIndexChanged += (_, _) => RenderFiles();
@@ -74,10 +73,11 @@ internal sealed class MergeView : UserControl
         fileList.VirtualMode = true;
         fileList.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         fileList.AccessibleName = "3方向マージのファイル一覧";
-        foreach (var (title, weight) in new[] { ("ファイル名", 33), ("フォルダ", 25), ("状態", 24), ("未解決の競合", 18) })
+        foreach (var (title, weight) in new[] { ("ファイル名", 29), ("フォルダ", 23), ("状態", 31), ("未解決セル", 17) })
             fileList.Columns.Add(new DataGridViewTextBoxColumn
             {
-                HeaderText = title, FillWeight = weight, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
+                HeaderText = title, FillWeight = weight, MinimumWidth = title == "状態" ? 190 : 65,
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
             });
         fileSort = new GridSort(fileList, RenderFiles);
         fileList.CellValueNeeded += (_, e) =>
@@ -90,6 +90,15 @@ internal sealed class MergeView : UserControl
                 2 => StatusText(BookStatus(book)),
                 _ => book.Plan is null ? "—" : Pending(book).ToString()
             };
+        };
+        fileList.CellFormatting += (_, e) =>
+        {
+            if (FileAt(e.RowIndex) is not { } book || e.CellStyle is not { } style) return;
+            if (BookStatus(book) is FileState.Conflict or FileState.ManualReview)
+            {
+                style.BackColor = Appearance.MergeConflict;
+                style.SelectionBackColor = Appearance.MergeConflictSelected;
+            }
         };
         fileList.CellToolTipTextNeeded += (_, e) =>
         {
@@ -223,8 +232,6 @@ internal sealed class MergeView : UserControl
             if (book.Plan is null || book.Plan.Notices.Count > 0 ||
                 book.Plan.Changes.Any(change => change.Disposition == MergeDisposition.Unsupported))
                 review.Add(book.RelativePath);
-            if (book.Plan?.Changes.Any(change => change.Disposition == MergeDisposition.TakeIncoming) == true)
-                automatic.Add(book.RelativePath);
         }
         books = result.OrderByDescending(book => conflicts[book.RelativePath] > 0)
             .ThenByDescending(book => review.Contains(book.RelativePath)).ToArray();
@@ -237,7 +244,7 @@ internal sealed class MergeView : UserControl
         var old = Current;
         var filtered = books.Where(book => filter.SelectedIndex switch
         {
-            1 => Pending(book) > 0,
+            1 => Pending(book) > 0 || review.Contains(book.RelativePath),
             2 => review.Contains(book.RelativePath),
             _ => true
         });
@@ -305,26 +312,24 @@ internal sealed class MergeView : UserControl
     }
 
     private void UpdateSummary() =>
-        summary.Text = $"{books.Count} ファイル　未解決の競合 {unresolved} セル　手動確認 {review.Count} ファイル";
+        summary.Text = $"{books.Count} ファイル　未解決のコンフリクト {unresolved} セル　手動解消 {review.Count} ファイル";
 
-    private enum FileState { Conflict, ManualReview, Automatic, Resolved, Different, Same }
+    private enum FileState { Conflict, ManualReview, Resolved, Different, Same }
 
     private FileState BookStatus(FolderMergeBook book)
     {
         if (Pending(book) > 0) return FileState.Conflict;
         if (review.Contains(book.RelativePath)) return FileState.ManualReview;
         if (conflicts[book.RelativePath] > 0) return FileState.Resolved;
-        if (automatic.Contains(book.RelativePath)) return FileState.Automatic;
         return book.Plan!.PartChanges.Count > 0 ? FileState.Different : FileState.Same;
     }
 
     private static string StatusText(FileState state) => state switch
     {
-        FileState.Conflict => "競合あり",
-        FileState.ManualReview => "手動確認",
-        FileState.Automatic => "自動取り込みあり",
-        FileState.Resolved => "競合を解決済み",
-        FileState.Different => "差分あり",
+        FileState.Conflict => "コンフリクトあり",
+        FileState.ManualReview => "コンフリクト（手動解消）",
+        FileState.Resolved => "コンフリクト解消済み",
+        FileState.Different => "差分あり（コンフリクトなし）",
         _ => "同一"
     };
 
@@ -336,7 +341,6 @@ internal sealed class MergeView : UserControl
         choices.Clear();
         conflicts.Clear();
         review.Clear();
-        automatic.Clear();
         unresolved = 0;
         RenderFiles();
     }
@@ -347,8 +351,8 @@ internal sealed class MergeView : UserControl
     {
         ResetPlan();
         save.Text = folders.Checked ? "結果フォルダに保存…" : "別名で保存…";
-        summary.Text = folders.Checked ? "共通ベース・本番版・取り込み元のフォルダを指定します。" :
-            "共通ベース・本番版・取り込み元の Excel ファイルを指定します。";
+        summary.Text = folders.Checked ? "共通ベース・取り込み1・取り込み2のフォルダを指定します。" :
+            "共通ベース・取り込み1・取り込み2の Excel ファイルを指定します。";
         ShowInputs(true);
     }
 
@@ -379,7 +383,7 @@ internal sealed class MergeView : UserControl
         open.Enabled = preview.Enabled = !busy && Current is not null;
         save.Enabled = !busy && unresolved == 0 && books.Any(book => book.ProductionPath is not null);
         notice.Text = Current is { } book ? book.Notice ??
-            (review.Contains(book.RelativePath) ? "詳細でマージ対象外の項目を確認できます。" : "") : "";
+            (review.Contains(book.RelativePath) ? "手動で解消する項目は「詳細を開く」から確認できます。" : "") : "";
         notice.Visible = notice.Text.Length > 0;
     }
 
