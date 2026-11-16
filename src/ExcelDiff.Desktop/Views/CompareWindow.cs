@@ -52,7 +52,7 @@ internal sealed class CompareWindow : Form
         var menu = new MenuStrip { Dock = DockStyle.Fill, BackColor = Color.White };
         var file = new ToolStripMenuItem("ファイル");
         file.DropDownItems.Add(new ToolStripMenuItem("比較…", null, (_, _) => Choose()) { ShortcutKeys = Keys.Control | Keys.O });
-        file.DropDownItems.Add(new ToolStripMenuItem("3方向マージ…", null, (_, _) => OpenMerge()));
+        file.DropDownItems.Add(new ToolStripMenuItem("マージ比較…", null, (_, _) => OpenMerge()));
         file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseTab(tabs.SelectedTab))
         {
             ShortcutKeys = Keys.Control | Keys.W
@@ -66,7 +66,7 @@ internal sealed class CompareWindow : Form
         AddPreviewOption("周辺を表示", previewOptions.ShowNearby, (current, enabled) => current with { ShowNearby = enabled });
         AddPreviewOption("保存倍率を使う", previewOptions.UseSavedZoom, (current, enabled) => current with { UseSavedZoom = enabled });
         AddPreviewOption("グリッド線を表示", previewOptions.ShowGridlines, (current, enabled) => current with { ShowGridlines = enabled });
-        AddPreviewOption("3方向マージで3列表示", previewOptions.ShowThreeWay, (current, enabled) => current with { ShowThreeWay = enabled });
+        AddPreviewOption("共通ベースありのマージ比較で3列表示", previewOptions.ShowThreeWay, (current, enabled) => current with { ShowThreeWay = enabled });
         menu.Items.AddRange([file, view, settings]);
         MainMenuStrip = menu;
         Appearance.Row(layout, menu);
@@ -501,7 +501,7 @@ internal sealed class CompareWindow : Form
             var merge = new MergeView();
             merge.OpenRequested += OpenMergeBook;
             merge.ResultsCleared += CloseMergeBooks;
-            page = new TabPage("3方向マージ") { Tag = merge };
+            page = new TabPage("マージ比較") { Tag = merge };
             page.Controls.Add(merge);
             tabs.TabPages.Add(page);
         }
@@ -573,8 +573,8 @@ internal sealed class CompareWindow : Form
         Text = tabs.SelectedTab?.Tag switch
         {
             WorkbookView => "ファイル比較 — Excel Diff",
-            MergeView => "3方向マージ — Excel Diff",
-            MergeBookView detail => $"{detail.Book.RelativePath} — 3方向マージ",
+            MergeView => "マージ比較 — Excel Diff",
+            MergeBookView detail => $"{detail.Book.RelativePath} — マージ比較",
             _ => folder ? "フォルダ比較 — Excel Diff" : "Excel Diff"
         };
         if (!folder)

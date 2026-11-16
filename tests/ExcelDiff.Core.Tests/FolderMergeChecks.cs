@@ -62,6 +62,15 @@ internal static class FolderMergeChecks
         check(File.Exists(Path.Combine(destination, "keep.xlsx")) && File.Exists(Path.Combine(destination, "broken.xlsx")) &&
             !File.Exists(Path.Combine(destination, "new.xlsx")), "本番版のファイル構成を維持する");
 
+        var pair = FolderMerger.AnalyzePair(production, incoming);
+        check(pair.Books.Count == 5 && pair.Books.All(book => book.BasePath is null) &&
+            pair.Books.Single(book => book.RelativePath == "keep.xlsx").Notice?.Contains("共通ベース") == false,
+            "2方向のフォルダ比較で共通ベースの欠落を通知しない");
+        var pairOutput = Path.Combine(scratch, "pair-folder-output");
+        pair.Save(pairOutput, choices);
+        check(Value(Path.Combine(pairOutput, "first.xlsx")) == "1200" &&
+            Value(Path.Combine(pairOutput, nested)) == "1300", "2方向のフォルダも相対パスを保って保存する");
+
         try
         {
             plan.Save(Path.Combine(production, "out"), choices);

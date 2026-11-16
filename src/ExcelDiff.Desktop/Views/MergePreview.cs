@@ -6,6 +6,7 @@ namespace ExcelDiff.Desktop.Views;
 internal sealed class MergePreview : UserControl
 {
     private readonly FolderMergeBook book;
+    private readonly bool useBase;
     private readonly CancellationTokenSource lifetime = new();
     private readonly ComboBox sheets = new() { Width = 190, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "プレビューするシート" };
     private readonly ComboBox pairs = new() { Width = 190, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "プレビューする版" };
@@ -24,9 +25,10 @@ internal sealed class MergePreview : UserControl
     private bool loading;
     private bool selecting;
 
-    internal MergePreview(FolderMergeBook book)
+    internal MergePreview(FolderMergeBook book, bool useBase)
     {
         this.book = book;
+        this.useBase = useBase;
         changes = (book.Plan?.Changes ?? []).GroupBy(change => change.Cell.Sheet)
             .ToDictionary(group => group.Key, group => group.ToArray());
         Dock = DockStyle.Fill;
@@ -141,10 +143,8 @@ internal sealed class MergePreview : UserControl
 
     private void SetColumns()
     {
-        pairs.Visible = !options.ShowThreeWay;
-        var hidden = options.ShowThreeWay ? -1 : pairs.SelectedIndex;
-        // Pair choices omit base, incoming, then production.
-        hidden = hidden switch { 1 => 2, 2 => 1, _ => hidden };
+        pairs.Visible = useBase && !options.ShowThreeWay;
+        var hidden = !useBase ? 0 : options.ShowThreeWay ? -1 : pairs.SelectedIndex switch { 1 => 2, 2 => 1, _ => 0 };
         for (var i = 0; i < panes.Length; i++)
         {
             panels[i].Visible = i != hidden;

@@ -15,7 +15,7 @@ internal sealed class MergeBookView : UserControl
         Dock = DockStyle.Top, Height = 56, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
         AccessibleName = "選択した差分の詳細"
     };
-    private readonly PackageDiffView package = new();
+    private readonly PackageDiffView? package;
     private readonly MergePreview preview;
     private readonly Button useProduction;
     private readonly Button useIncoming;
@@ -37,7 +37,7 @@ internal sealed class MergeBookView : UserControl
         conflicts = rows.Count(row => row.Disposition == MergeDisposition.Conflict);
         notes = book.Notice ?? string.Join(Environment.NewLine,
             book.Plan?.Notices.Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
-        preview = new MergePreview(book);
+        preview = new MergePreview(book, owner.UsesBase);
         var layout = Appearance.Stack();
         var actions = Appearance.Toolbar();
         useProduction = Appearance.Button("取り込み1を採用", () => Choose(MergeChoice.Production));
@@ -53,6 +53,7 @@ internal sealed class MergeBookView : UserControl
                      ("取り込み1", 18), ("取り込み2", 18), ("処理", 24) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight,
                 MinimumWidth = weight == 7 ? 46 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        grid.Columns[2].Visible = owner.UsesBase;
         sort = new GridSort(grid, SortChanges);
         grid.CellValueNeeded += (_, e) =>
         {
@@ -93,12 +94,13 @@ internal sealed class MergeBookView : UserControl
         views.TabPages.AddRange([cellTab, previewTab]);
         if (book.Plan is { } plan)
         {
-            var partTab = new TabPage($"ブック全体の差分 ({plan.PartChanges.Count})");
+            package = owner.UsesBase ? new PackageDiffView() : new PackageDiffView(book.ProductionPath, book.IncomingPath);
+            var partTab = new TabPage($"ブック全体の差分 ({plan.PartChanges.Count + plan.PairParts.Count})");
             partTab.Controls.Add(package);
             views.TabPages.Add(partTab);
-            package.SetMerge(plan.PartChanges, book.BasePath!, book.ProductionPath!, book.IncomingPath!);
+            if (owner.UsesBase) package.SetMerge(plan.PartChanges, book.BasePath!, book.ProductionPath!, book.IncomingPath!);
+            else package.SetComparison(plan.PairParts, "取り込み1", "取り込み2");
         }
-        else package.Dispose();
         views.SelectedTab = cellTab;
         views.SelectedIndexChanged += (_, _) =>
         {
@@ -122,7 +124,7 @@ internal sealed class MergeBookView : UserControl
     internal void SetPreviewOptions(PreviewOptions options)
     {
         preview.SetOptions(options);
-        if (!package.IsDisposed) package.SetThreeWay(options.ShowThreeWay);
+        package?.SetThreeWay(options.ShowThreeWay);
     }
 
     internal void SetLocked(bool busy)
@@ -176,7 +178,8 @@ internal sealed class MergeBookView : UserControl
         reveal.Enabled = views.SelectedTab != previewTab;
         status.Text = $"未解決のコンフリクト {conflicts - choices.Count} 件";
         var contents = Current is { } change ? change.Reason ??
-            $"共通ベース　{change.Base}{Environment.NewLine}取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";
+            (Owner.UsesBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "") +
+            $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";
         details.Text = string.Join(Environment.NewLine, new[] { notes, contents }.Where(text => text.Length > 0));
         details.Visible = details.Text.Length > 0;
     }

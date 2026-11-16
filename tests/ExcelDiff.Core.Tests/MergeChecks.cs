@@ -108,6 +108,25 @@ internal static class MergeChecks
                 XDocument.Load(shared).Root!.Attribute("count") is null, "再計算を指定し、古い計算チェーンと共有文字列件数を無効にする");
         }
 
+        var pair = WorkbookMerger.AnalyzePair(production, incoming);
+        var pairConflicts = pair.Changes.Where(change => change.Disposition == MergeDisposition.Conflict).ToArray();
+        check(pairConflicts.Any(change => change.Cell.Address == "B2") &&
+            pairConflicts.Any(change => change.Cell.Address == "C2") &&
+            pair.Changes.All(change => change.Base.Length == 0 &&
+                change.Disposition is MergeDisposition.Conflict or MergeDisposition.Unsupported) &&
+            pair.Changes.All(change => change.Cell.Address != "F4"),
+            "2方向は差のあるセルを採用待ちとし、値が同じセルを除外する");
+        check(pair.PartChanges.Count == 0 && pair.PairParts.Count > 0 && pair.ReadPreview()[0] is null,
+            "2方向の内部差分とプレビューは共通ベースを使わない");
+        var pairOutput = Path.Combine(directory, "pair-merged.xlsx");
+        Expect<InvalidOperationException>(() => pair.Save(pairOutput, new Dictionary<MergeCellAddress, MergeChoice>()));
+        check(!File.Exists(pairOutput), "2方向でも未解決の選択があると保存しない");
+        pair.Save(pairOutput, pairConflicts.ToDictionary(change => change.Cell,
+            change => change.Cell.Address == "F5" ? MergeChoice.Incoming : MergeChoice.Production));
+        var selected = XlsxReader.Read(pairOutput).Sheets.Single();
+        check(selected.At(2, 2)?.Value == "125" && selected.At(5, 6)?.Value == "12",
+            "2方向の出力に両側の選択を反映する");
+
         Change(incoming, "B2", """><v>170</v></c>""");
         Expect<IOException>(() => plan.Save(Path.Combine(directory, "stale.xlsx"), choices));
         check(!File.Exists(Path.Combine(directory, "stale.xlsx")), "解析後の入力変更を検出する");

@@ -85,38 +85,56 @@ public static class FolderMerger
 {
     public static FolderMergePlan Analyze(string baseFolder, string productionFolder, string incomingFolder,
         CancellationToken token = default, Action<FolderComparisonProgress>? reportProgress = null)
+        => AnalyzeCore(baseFolder, productionFolder, incomingFolder, token, reportProgress);
+
+    public static FolderMergePlan AnalyzePair(string productionFolder, string incomingFolder,
+        CancellationToken token = default, Action<FolderComparisonProgress>? reportProgress = null)
+        => AnalyzeCore(null, productionFolder, incomingFolder, token, reportProgress);
+
+    private static FolderMergePlan AnalyzeCore(string? baseFolder, string productionFolder, string incomingFolder,
+        CancellationToken token, Action<FolderComparisonProgress>? reportProgress)
     {
-        string[] roots = [Path.GetFullPath(baseFolder), Path.GetFullPath(productionFolder), Path.GetFullPath(incomingFolder)];
-        var files = roots.Select(root => FolderComparer.Enumerate(root, recursive: true, token)).ToArray();
-        var paths = files[1].Keys.Union(files[0].Keys, StringComparer.OrdinalIgnoreCase)
-            .Union(files[2].Keys, StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        var productionRoot = Path.GetFullPath(productionFolder);
+        var incomingRoot = Path.GetFullPath(incomingFolder);
+        var baseRoot = baseFolder is null ? null : Path.GetFullPath(baseFolder);
+        var productionFiles = FolderComparer.Enumerate(productionRoot, recursive: true, token);
+        var incomingFiles = FolderComparer.Enumerate(incomingRoot, recursive: true, token);
+        var baseFiles = baseRoot is null ? null : FolderComparer.Enumerate(baseRoot, recursive: true, token);
+        var paths = productionFiles.Keys.Union(baseFiles?.Keys.AsEnumerable() ?? [], StringComparer.OrdinalIgnoreCase)
+            .Union(incomingFiles.Keys, StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
         var books = new List<FolderMergeBook>(paths.Length);
         reportProgress?.Invoke(new(0, paths.Length));
         foreach (var path in paths)
         {
             token.ThrowIfCancellationRequested();
-            var original = files[0].GetValueOrDefault(path)?.FullName;
-            var production = files[1].GetValueOrDefault(path)?.FullName;
-            var incoming = files[2].GetValueOrDefault(path)?.FullName;
+            var original = baseFiles?.GetValueOrDefault(path)?.FullName;
+            var production = productionFiles.GetValueOrDefault(path)?.FullName;
+            var incoming = incomingFiles.GetValueOrDefault(path)?.FullName;
             WorkbookMergePlan? plan = null;
             string? notice = null;
-            if (original is null || production is null || incoming is null)
+            if ((baseFiles is not null && original is null) || production is null || incoming is null)
             {
                 var missing = new List<string>(3);
-                if (original is null) missing.Add("共通ベース");
+                if (baseFiles is not null && original is null) missing.Add("共通ベース");
                 if (production is null) missing.Add("取り込み1");
                 if (incoming is null) missing.Add("取り込み2");
                 notice = $"ファイルなし（{string.Join("・", missing)}）。追加・削除は手動で確認してください。";
             }
             else
             {
-                try { plan = WorkbookMerger.Analyze(original, production, incoming, token); }
+                try
+                {
+                    plan = original is null ? WorkbookMerger.AnalyzePair(production, incoming, token) :
+                        WorkbookMerger.Analyze(original, production, incoming, token);
+                }
                 catch (Exception error) when (FolderComparer.IsReadError(error)) { notice = error.Message; }
             }
 
             books.Add(new(path, original, production, incoming, plan, notice));
             reportProgress?.Invoke(new(books.Count, paths.Length));
         }
-        return new(roots, files.Select(map => map.Keys.ToArray()).ToArray(), books);
+        return baseRoot is not null && baseFiles is not null
+            ? new([baseRoot, productionRoot, incomingRoot], [baseFiles.Keys.ToArray(), productionFiles.Keys.ToArray(), incomingFiles.Keys.ToArray()], books)
+            : new([productionRoot, incomingRoot], [productionFiles.Keys.ToArray(), incomingFiles.Keys.ToArray()], books);
     }
 }

@@ -7,6 +7,7 @@ internal sealed class MergeView : UserControl
 {
     private readonly CancellationTokenSource lifetime = new();
     private readonly CheckBox folders = new() { Text = "フォルダを指定", Checked = true, AutoSize = true };
+    private readonly CheckBox useBase = new() { Text = "共通ベースを使う", Checked = true, AutoSize = true };
     private readonly TextBox basePath = new();
     private readonly TextBox productionPath = new();
     private readonly TextBox incomingPath = new();
@@ -49,8 +50,10 @@ internal sealed class MergeView : UserControl
         paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         paths.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folders.Margin = new Padding(6, 5, 6, 4);
-        paths.Controls.Add(folders, 1, 0);
+        var modes = Appearance.Toolbar();
+        modes.Controls.AddRange([folders, useBase]);
+        paths.Controls.Add(modes, 0, 0);
+        paths.SetColumnSpan(modes, 3);
         AddPath(1, "共通ベース", basePath);
         AddPath(2, "取り込み1", productionPath);
         AddPath(3, "取り込み2", incomingPath);
@@ -72,7 +75,7 @@ internal sealed class MergeView : UserControl
 
         fileList.VirtualMode = true;
         fileList.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        fileList.AccessibleName = "3方向マージのファイル一覧";
+        fileList.AccessibleName = "マージ比較のファイル一覧";
         foreach (var (title, weight) in new[] { ("ファイル名", 29), ("フォルダ", 23), ("状態", 31), ("未解決セル", 17) })
             fileList.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -116,21 +119,24 @@ internal sealed class MergeView : UserControl
         Appearance.Row(layout, notice);
         Controls.Add(layout);
         if (LocalSettings.Load<MergeTargets>(recentTargetsPath) is { } previous &&
-            !string.IsNullOrWhiteSpace(previous.Base) && !string.IsNullOrWhiteSpace(previous.Production) &&
+            (!previous.UseBase || !string.IsNullOrWhiteSpace(previous.Base)) && !string.IsNullOrWhiteSpace(previous.Production) &&
             !string.IsNullOrWhiteSpace(previous.Incoming))
         {
-            basePath.Text = previous.Base;
+            basePath.Text = previous.Base ?? "";
             productionPath.Text = previous.Production;
             incomingPath.Text = previous.Incoming;
             folders.Checked = previous.Folders;
+            useBase.Checked = previous.UseBase;
         }
         foreach (var box in new[] { basePath, productionPath, incomingPath })
             box.TextChanged += (_, _) => ResetInputs();
         folders.CheckedChanged += (_, _) => ResetInputs();
+        useBase.CheckedChanged += (_, _) => ResetInputs();
         ResetInputs();
     }
 
     internal bool Busy => busy;
+    internal bool UsesBase => useBase.Checked;
 
     internal IReadOnlyDictionary<MergeCellAddress, MergeChoice> ChoicesFor(FolderMergeBook book)
     {
@@ -182,12 +188,13 @@ internal sealed class MergeView : UserControl
     private async Task Analyze()
     {
         var compareFolders = folders.Checked;
+        var compareWithBase = UsesBase;
         var token = lifetime.Token;
         ResetPlan();
-        SetBusy(true, compareFolders ? "3つのフォルダを比較しています…" : "3冊のセル内容を比較しています…");
+        SetBusy(true, compareFolders ? "フォルダを比較しています…" : "ブックを比較しています…");
         try
         {
-            var original = Path.GetFullPath(ReadPath(basePath));
+            var original = compareWithBase ? Path.GetFullPath(ReadPath(basePath)) : null;
             var production = Path.GetFullPath(ReadPath(productionPath));
             var incoming = Path.GetFullPath(ReadPath(incomingPath));
             if (compareFolders)
@@ -200,19 +207,23 @@ internal sealed class MergeView : UserControl
                         summary.Text = $"解析中　{count.Completed:N0} / {count.Total:N0} ファイル";
                 };
                 timer.Start();
-                var result = await Task.Run(() => FolderMerger.Analyze(original, production, incoming, token,
-                    value => Volatile.Write(ref progress, value)), token);
+                void Report(FolderComparisonProgress value) => Volatile.Write(ref progress, value);
+                var result = await Task.Run(() => original is null
+                    ? FolderMerger.AnalyzePair(production, incoming, token, Report)
+                    : FolderMerger.Analyze(original, production, incoming, token, Report), token);
                 if (IsDisposed || token.IsCancellationRequested) return;
                 folderPlan = result;
                 LoadBooks(result.Books);
             }
             else
             {
-                var result = await Task.Run(() => WorkbookMerger.Analyze(original, production, incoming, token), token);
+                var result = await Task.Run(() => original is null ? WorkbookMerger.AnalyzePair(production, incoming, token) :
+                    WorkbookMerger.Analyze(original, production, incoming, token), token);
                 if (IsDisposed || token.IsCancellationRequested) return;
                 LoadBooks([new(Path.GetFileName(production), original, production, incoming, result, null)]);
             }
-            LocalSettings.Save(recentTargetsPath, new MergeTargets(original, production, incoming, compareFolders));
+            LocalSettings.Save(recentTargetsPath, new MergeTargets(original ?? ReadPath(basePath), production, incoming,
+                compareFolders, compareWithBase));
             ShowInputs(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -220,7 +231,7 @@ internal sealed class MergeView : UserControl
         finally { if (!IsDisposed) SetBusy(false); }
     }
 
-    private sealed record MergeTargets(string Base, string Production, string Incoming, bool Folders);
+    private sealed record MergeTargets(string? Base, string Production, string Incoming, bool Folders, bool UseBase = true);
 
     private void LoadBooks(IReadOnlyList<FolderMergeBook> result)
     {
@@ -321,7 +332,7 @@ internal sealed class MergeView : UserControl
         if (Pending(book) > 0) return FileState.Conflict;
         if (review.Contains(book.RelativePath)) return FileState.ManualReview;
         if (conflicts[book.RelativePath] > 0) return FileState.Resolved;
-        return book.Plan!.PartChanges.Count > 0 ? FileState.Different : FileState.Same;
+        return book.Plan!.PartChanges.Count + book.Plan.PairParts.Count > 0 ? FileState.Different : FileState.Same;
     }
 
     private static string StatusText(FileState state) => state switch
@@ -350,9 +361,11 @@ internal sealed class MergeView : UserControl
     private void ResetInputs()
     {
         ResetPlan();
+        foreach (Control control in paths.Controls)
+            if (paths.GetRow(control) == 1) control.Visible = UsesBase;
         save.Text = folders.Checked ? "結果フォルダに保存…" : "別名で保存…";
-        summary.Text = folders.Checked ? "共通ベース・取り込み1・取り込み2のフォルダを指定します。" :
-            "共通ベース・取り込み1・取り込み2の Excel ファイルを指定します。";
+        var versions = UsesBase ? "共通ベース・取り込み1・取り込み2" : "取り込み1・取り込み2";
+        summary.Text = $"{versions}の{(folders.Checked ? "フォルダ" : "Excel ファイル")}を指定します。";
         ShowInputs(true);
     }
 
@@ -376,7 +389,8 @@ internal sealed class MergeView : UserControl
     private void UpdateControls()
     {
         analyze.Visible = inputsVisible;
-        analyze.Enabled = !busy && ReadPath(basePath).Length > 0 && ReadPath(productionPath).Length > 0 && ReadPath(incomingPath).Length > 0;
+        analyze.Enabled = !busy && (!UsesBase || ReadPath(basePath).Length > 0) &&
+            ReadPath(productionPath).Length > 0 && ReadPath(incomingPath).Length > 0;
         changeInputs.Visible = folderPlan is not null || books.Count > 0;
         changeInputs.Enabled = !busy;
         filter.Enabled = !busy && books.Count > 0;

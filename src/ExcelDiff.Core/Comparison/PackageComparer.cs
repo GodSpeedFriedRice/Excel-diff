@@ -30,9 +30,11 @@ public sealed record PackagePartMergeDifference(string Path, PackagePart? Base, 
 public static class PackageComparer
 {
     public static IReadOnlyList<PackagePartDifference> Compare(string before, string after, CancellationToken token = default)
+        => Compare(Read(before, token), Read(after, token), token);
+
+    internal static IReadOnlyList<PackagePartDifference> Compare(Dictionary<string, PackagePart> left,
+        Dictionary<string, PackagePart> right, CancellationToken token)
     {
-        var left = Read(before, token);
-        var right = Read(after, token);
         var changes = new List<PackagePartDifference>();
         foreach (var path in Paths(left, right))
         {

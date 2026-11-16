@@ -20,40 +20,43 @@ public sealed record MergeNotice(string Sheet, string Reason);
 
 public sealed class WorkbookMergePlan
 {
-    private readonly Input[] inputs;
+    private readonly Input? baseInput;
+    private readonly Input productionInput;
+    private readonly Input incomingInput;
     private readonly Edit[] edits;
 
-    internal WorkbookMergePlan(Input[] inputs, List<Edit> edits, List<MergeNotice> notices,
-        IReadOnlyList<PackagePartMergeDifference> partChanges)
+    internal WorkbookMergePlan(Input? baseInput, Input productionInput, Input incomingInput, List<Edit> edits,
+        List<MergeNotice> notices, IReadOnlyList<PackagePartMergeDifference> partChanges, IReadOnlyList<PackagePartDifference> pairParts)
     {
-        this.inputs = inputs;
+        this.baseInput = baseInput;
+        this.productionInput = productionInput;
+        this.incomingInput = incomingInput;
         this.edits = edits.ToArray();
         Changes = Array.AsReadOnly(this.edits.Select(edit => edit.Change).ToArray());
         Notices = notices.AsReadOnly();
         PartChanges = partChanges;
+        PairParts = pairParts;
     }
 
     public IReadOnlyList<MergeCellChange> Changes { get; }
     public IReadOnlyList<MergeNotice> Notices { get; }
     public IReadOnlyList<PackagePartMergeDifference> PartChanges { get; }
+    public IReadOnlyList<PackagePartDifference> PairParts { get; }
 
-    public Workbook?[] ReadPreview(CancellationToken token = default)
+    public Workbook?[] ReadPreview(CancellationToken token = default) =>
+        [baseInput is null ? null : ReadPreview(baseInput, token), ReadPreview(productionInput, token), ReadPreview(incomingInput, token)];
+
+    private static Workbook ReadPreview(Input input, CancellationToken token)
     {
-        var books = new Workbook?[inputs.Length];
-        for (var i = 0; i < inputs.Length; i++)
-        {
-            var input = inputs[i];
-            using var stream = input.Open();
-            input.Verify(stream, token);
-            books[i] = XlsxReader.Read(input.Path, token);
-        }
-        return books;
+        using var stream = input.Open();
+        input.Verify(stream, token);
+        return XlsxReader.Read(input.Path, token);
     }
 
     public void Save(string path, IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices, CancellationToken token = default)
     {
         var output = WorkbookMerger.XlsxPath(path);
-        if (inputs.Any(input => string.Equals(input.Path, output, StringComparison.OrdinalIgnoreCase)))
+        if (new[] { baseInput?.Path, productionInput.Path, incomingInput.Path }.Contains(output, StringComparer.OrdinalIgnoreCase))
             throw new IOException("入力ファイルとは別のファイル名を指定してください。");
         if (File.Exists(output)) throw new IOException("出力先に同名のファイルがあります。");
         var writes = new List<Edit>();
@@ -74,12 +77,12 @@ public sealed class WorkbookMergePlan
             }
         }
 
-        using var original = inputs[0].Open();
-        using var production = inputs[1].Open();
-        using var incoming = inputs[2].Open();
-        inputs[0].Verify(original, token);
-        inputs[1].Verify(production, token);
-        inputs[2].Verify(incoming, token);
+        using var original = baseInput?.Open();
+        using var production = productionInput.Open();
+        using var incoming = incomingInput.Open();
+        if (original is not null) baseInput!.Verify(original, token);
+        productionInput.Verify(production, token);
+        incomingInput.Verify(incoming, token);
         var temporary = Path.Combine(Path.GetDirectoryName(output)!, $".excel-diff-{Guid.NewGuid():N}.tmp");
         var created = false;
         try
@@ -134,20 +137,31 @@ public sealed class WorkbookMergePlan
 public static partial class WorkbookMerger
 {
     public static WorkbookMergePlan Analyze(string basePath, string productionPath, string incomingPath,
-        CancellationToken token = default)
+        CancellationToken token = default) => AnalyzeCore(basePath, productionPath, incomingPath, token);
+
+    public static WorkbookMergePlan AnalyzePair(string productionPath, string incomingPath, CancellationToken token = default)
+        => AnalyzeCore(null, productionPath, incomingPath, token);
+
+    private static WorkbookMergePlan AnalyzeCore(string? basePath, string productionPath, string incomingPath,
+        CancellationToken token)
     {
-        var (baseInput, baseBook, baseParts) = Read(basePath, "共通ベース", token);
+        (WorkbookMergePlan.Input? Input, Workbook? Book, Dictionary<string, PackagePart>? Parts) baselineBook =
+            basePath is null ? default : Read(basePath, "共通ベース", token);
+        var hasBase = baselineBook.Book is not null;
         var (productionInput, production, productionParts) = Read(productionPath, "取り込み1", token);
         var (incomingInput, incoming, incomingParts) = Read(incomingPath, "取り込み2", token);
         var edits = new List<WorkbookMergePlan.Edit>();
         var notices = new List<MergeNotice>();
-        var partChanges = PackageComparer.Compare(baseParts, productionParts, incomingParts, token);
-        if (baseBook.Date1904 != production.Date1904 || baseBook.Date1904 != incoming.Date1904)
+        var partChanges = hasBase ? PackageComparer.Compare(baselineBook.Parts!, productionParts, incomingParts, token) : [];
+        var pairParts = hasBase ? [] : PackageComparer.Compare(productionParts, incomingParts, token);
+        WorkbookMergePlan Result() => new(baselineBook.Input, productionInput, incomingInput, edits, notices, partChanges, pairParts);
+        if (production.Date1904 != incoming.Date1904 ||
+            (baselineBook.Book is { } baseBook && baseBook.Date1904 != production.Date1904))
         {
-            notices.Add(new("ブック", "3冊の日付システム（1900年／1904年）が異なるため、セルの取り込みは停止します。"));
-            return new([baseInput, productionInput, incomingInput], edits, notices, partChanges);
+            notices.Add(new("ブック", "日付システム（1900年／1904年）が異なるため、セルの取り込みは停止します。"));
+            return Result();
         }
-        var originalSheets = ByName(baseBook);
+        var originalSheets = baselineBook.Book is { } originalBook ? ByName(originalBook) : [];
         var productionSheets = ByName(production);
         var incomingSheets = ByName(incoming);
         foreach (var name in originalSheets.Keys.Union(productionSheets.Keys).Union(incomingSheets.Keys))
@@ -156,37 +170,38 @@ public static partial class WorkbookMerger
             var original = originalSheets.GetValueOrDefault(name);
             var destination = productionSheets.GetValueOrDefault(name);
             var source = incomingSheets.GetValueOrDefault(name);
-            if (original is null || destination is null || source is null)
+            if ((hasBase && original is null) || destination is null || source is null)
             {
-                if (original is not null || (destination is null) != (source is null))
+                if (!hasBase || original is not null || (destination is null) != (source is null))
                     notices.Add(new(name, "シートの追加・削除・名前変更は手動で確認してください。"));
                 else
                     notices.Add(new(name, "両側に同名のシートが追加されています。取り込み1を保持します。"));
                 continue;
             }
-            if (!original.Merges.Ranges.SequenceEqual(destination.Merges.Ranges) ||
-                !original.Merges.Ranges.SequenceEqual(source.Merges.Ranges))
+            if (!destination.Merges.Ranges.SequenceEqual(source.Merges.Ranges) ||
+                (original is not null && !original.Merges.Ranges.SequenceEqual(destination.Merges.Ranges)))
             {
                 notices.Add(new(name, "結合範囲が変わったシートです。取り込み1を保持します。"));
                 continue;
             }
 
-            var baseline = new MergeWorksheet(original, token);
+            var baseline = original is null ? null : new MergeWorksheet(original, token);
             var current = new MergeWorksheet(destination, token);
             var other = new MergeWorksheet(source, token);
-            if (baseline.HasMovedLines(current, token) || baseline.HasMovedLines(other, token))
+            if (baseline is null ? current.HasMovedLines(other, token) :
+                baseline.HasMovedLines(current, token) || baseline.HasMovedLines(other, token))
             {
                 notices.Add(new(name, "行・列の移動を検出しました。取り込み1を保持します。"));
                 continue;
             }
 
-            foreach (var row in baseline.Rows.Keys.Union(current.Rows.Keys).Union(other.Rows.Keys).Order())
+            foreach (var row in (baseline?.Rows.Keys.AsEnumerable() ?? []).Union(current.Rows.Keys).Union(other.Rows.Keys).Order())
             {
                 token.ThrowIfCancellationRequested();
-                var originalRow = baseline.Rows.GetValueOrDefault(row);
+                var originalRow = baseline?.Rows.GetValueOrDefault(row);
                 var currentRow = current.Rows.GetValueOrDefault(row);
                 var incomingRow = other.Rows.GetValueOrDefault(row);
-                var merges = original.Merges.InRows(row, row);
+                var merges = destination.Merges.InRows(row, row);
                 var currentFormulaRanges = current.FormulaRanges.InRows(row, row);
                 var incomingFormulaRanges = other.FormulaRanges.InRows(row, row);
                 foreach (var column in Columns(originalRow).Union(Columns(currentRow)).Union(Columns(incomingRow)).Order())
@@ -195,12 +210,12 @@ public static partial class WorkbookMerger
                     var before = originalRow?.GetValueOrDefault(column) ?? MergeContent.Blank;
                     var ours = currentRow?.GetValueOrDefault(column) ?? MergeContent.Blank;
                     var theirs = incomingRow?.GetValueOrDefault(column) ?? MergeContent.Blank;
-                    if (theirs.Key == before.Key && ours.Key == before.Key) continue;
+                    if (hasBase ? theirs.Key == before.Key && ours.Key == before.Key : theirs.Key == ours.Key) continue;
 
                     string? reason = null;
                     MergeDisposition disposition;
-                    if (theirs.Key == before.Key) disposition = MergeDisposition.KeepProduction;
-                    else if (theirs.Key == ours.Key) disposition = MergeDisposition.AlreadyMatches;
+                    if (hasBase && theirs.Key == before.Key) disposition = MergeDisposition.KeepProduction;
+                    else if (hasBase && theirs.Key == ours.Key) disposition = MergeDisposition.AlreadyMatches;
                     else if (ours.Special || theirs.Special ||
                         currentFormulaRanges.Any(range => range.ContainsColumn(column)) ||
                         incomingFormulaRanges.Any(range => range.ContainsColumn(column)) ||
@@ -209,9 +224,9 @@ public static partial class WorkbookMerger
                         disposition = MergeDisposition.Unsupported;
                         reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。取り込み1を保持します。";
                     }
-                    else disposition = ours.Key == before.Key ? MergeDisposition.TakeIncoming : MergeDisposition.Conflict;
+                    else disposition = hasBase && ours.Key == before.Key ? MergeDisposition.TakeIncoming : MergeDisposition.Conflict;
 
-                    var change = new MergeCellChange(new(name, row, column), before.Display, ours.Display, theirs.Display,
+                    var change = new MergeCellChange(new(name, row, column), hasBase ? before.Display : "", ours.Display, theirs.Display,
                         disposition, reason);
                     edits.Add(new(change, destination.XmlPartPath!, theirs));
                 }
@@ -233,7 +248,7 @@ public static partial class WorkbookMerger
                         }
                     };
             }
-        return new([baseInput, productionInput, incomingInput], edits, notices, partChanges);
+        return Result();
     }
 
     private static (WorkbookMergePlan.Input Input, Workbook Book, Dictionary<string, PackagePart> Parts) Read(

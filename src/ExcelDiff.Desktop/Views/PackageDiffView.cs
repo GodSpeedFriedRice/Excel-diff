@@ -26,6 +26,8 @@ internal sealed class PackageDiffView : UserControl
     private bool loaded;
     private bool updating;
     private bool showThreeWay;
+    private string beforeLabel = "変更前";
+    private string afterLabel = "変更後";
 
     internal PackageDiffView(string? beforePath = null, string? afterPath = null)
     {
@@ -117,10 +119,9 @@ internal sealed class PackageDiffView : UserControl
         summary.Text = "ブック内の全部品を比較しています…";
         try
         {
-            pairs = await Task.Run(() => PackageComparer.Compare(beforePath, afterPath, request.Token), request.Token);
+            var result = await Task.Run(() => PackageComparer.Compare(beforePath, afterPath, request.Token), request.Token);
             if (IsDisposed || request.IsCancellationRequested) return;
-            loaded = true;
-            SetRows(pairs.Count, pairs.Count == 0 ? "部品に差分はありません。" : $"変更のある部品 {pairs.Count} 件");
+            SetComparison(result);
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
         catch (Exception error) when (FolderComparer.IsReadError(error))
@@ -128,6 +129,15 @@ internal sealed class PackageDiffView : UserControl
             if (!IsDisposed) summary.Text = $"部品を比較できません。{error.Message}";
         }
         finally { pending = null; }
+    }
+
+    internal void SetComparison(IReadOnlyList<PackagePartDifference> changes, string beforeLabel = "変更前", string afterLabel = "変更後")
+    {
+        this.beforeLabel = beforeLabel;
+        this.afterLabel = afterLabel;
+        pairs = changes;
+        loaded = true;
+        SetRows(pairs.Count, pairs.Count == 0 ? "部品に差分はありません。" : $"変更のある部品 {pairs.Count} 件");
     }
 
     internal void SetMerge(IReadOnlyList<PackagePartMergeDifference> changes, string original, string production, string incoming)
@@ -250,7 +260,7 @@ internal sealed class PackageDiffView : UserControl
         else if (!threeWay && index < pairs.Count)
         {
             var item = pairs[index];
-            details.Lines = [Describe("変更前", item.Before), Describe("変更後", item.After)];
+            details.Lines = [Describe(beforeLabel, item.Before), Describe(afterLabel, item.After)];
             ShowXml(beforePath!, item.Before, afterPath!, item.After);
         }
     }
