@@ -184,6 +184,13 @@ internal sealed class WorkbookView : UserControl
             leftFull.SetGridlines(options.ShowGridlines);
             rightFull.SetGridlines(options.ShowGridlines);
         }
+        if (options.ShowPageBreaks != previous.ShowPageBreaks)
+        {
+            leftPreview.SetPageBreakPreview(options.ShowPageBreaks);
+            rightPreview.SetPageBreakPreview(options.ShowPageBreaks);
+            leftFull.SetPageBreakPreview(options.ShowPageBreaks);
+            rightFull.SetPageBreakPreview(options.ShowPageBreaks);
+        }
         if (options.ShowNearby != previous.ShowNearby)
         {
             previews.Visible = options.ShowNearby;

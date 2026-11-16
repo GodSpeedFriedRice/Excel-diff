@@ -44,12 +44,12 @@ public static partial class XlsxReader
             if (!IsType(relation, "worksheet")) continue;
             var name = Required(entry, "name");
 
-            var area = book.Element(ns + "definedNames")?.Elements(ns + "definedName").FirstOrDefault(e =>
-                (string?)e.Attribute("name") == "_xlnm.Print_Area" &&
-                (int?)e.Attribute("localSheetId") == entry.ElementsBeforeSelf().Count());
+            var sheetIndex = entry.ElementsBeforeSelf().Count();
+            string? DefinedName(string target) => book.Element(ns + "definedNames")?.Elements(ns + "definedName")
+                .FirstOrDefault(e => (string?)e.Attribute("name") == target && (int?)e.Attribute("localSheetId") == sheetIndex)?.Value;
             var partPath = Resolve(workbookPath, relation);
             var sheet = ReadSheet(name, (string?)entry.Attribute("state") ?? "visible",
-                Part(zip, partPath), partPath, shared, formats, area?.Value, token);
+                Part(zip, partPath), partPath, shared, formats, DefinedName("_xlnm.Print_Area"), DefinedName("_xlnm.Print_Titles"), token);
             if (drawingTheme is not null)
             {
                 var (pictures, shapes) = ReadDrawings(zip, sheet.Xml.Root!, partPath, path, stream.Length, lastWriteTime, drawingTheme, token);
@@ -61,20 +61,30 @@ public static partial class XlsxReader
     }
 
     private static Sheet ReadSheet(string name, string visibility, XDocument document, string partPath, (string Text, bool Rich)[] shared,
-        StyleTable styles, string? area, CancellationToken token)
+        StyleTable styles, string? area, string? titles, CancellationToken token)
     {
         var sheet = document.Root!;
         var ns = sheet.Name.Namespace;
         var rows = new SortedDictionary<int, IReadOnlyDictionary<int, Cell>>();
         var settings = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var view = sheet.Element(ns + "sheetViews")?.Element(ns + "sheetView");
+        var print = SheetPrintSettings.Read(sheet, area, titles);
         settings["表示倍率"] = (string?)view?.Attribute("zoomScale") ?? "100";
+        settings["表示モード"] = (string?)view?.Attribute("view") ?? "normal";
         Add(settings, "ウィンドウ枠", view?.Element(ns + "pane"), "xSplit", "ySplit", "topLeftCell", "state");
-        Add(settings, "印刷", sheet.Element(ns + "pageSetup"), "scale", "orientation", "paperSize", "fitToWidth", "fitToHeight");
+        Add(settings, "印刷", sheet.Element(ns + "pageSetup"), "scale", "orientation", "paperSize", "paperWidth", "paperHeight",
+            "paperUnits", "fitToWidth", "fitToHeight", "pageOrder", "firstPageNumber", "useFirstPageNumber");
+        Add(settings, "印刷", sheet.Element(ns + "printOptions"), "headings");
         Add(settings, "印刷", sheet.Element(ns + "sheetPr")?.Element(ns + "pageSetUpPr"), "fitToPage");
         Add(settings, "印刷余白", sheet.Element(ns + "pageMargins"), "left", "right", "top", "bottom", "header", "footer");
         Add(settings, "既定レイアウト", sheet.Element(ns + "sheetFormatPr"), "defaultRowHeight", "defaultColWidth");
         if (area is not null) settings["印刷範囲"] = area;
+        if (titles is not null) settings["印刷タイトル"] = titles;
+        if (print.RowBreaks.Count > 0) settings["印刷改ページ / 行"] = BreakText(print.RowBreaks);
+        if (print.ColumnBreaks.Count > 0) settings["印刷改ページ / 列"] = BreakText(print.ColumnBreaks);
+
+        static string BreakText(IReadOnlyList<PrintBreak> breaks) =>
+            string.Join(", ", breaks.Select(value => $"{value.Before} ({(value.Manual ? "手動" : "自動")})"));
 
         var columnStyles = new Dictionary<int, IReadOnlyDictionary<string, string>>();
         var rowStyles = new Dictionary<int, IReadOnlyDictionary<string, string>>();
@@ -166,6 +176,7 @@ public static partial class XlsxReader
             RowFormats = rowStyles,
             ColumnFormats = columnStyles,
             UsedCellExtent = (lastUsedRow, lastUsedColumn),
+            PrintSettings = print,
             XmlPartPath = partPath
         };
     }

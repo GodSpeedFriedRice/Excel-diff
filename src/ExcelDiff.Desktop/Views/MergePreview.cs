@@ -130,6 +130,8 @@ internal sealed class MergePreview : UserControl
     internal void SetOptions(PreviewOptions next)
     {
         var redraw = options.UseSavedZoom != next.UseSavedZoom || options.ShowGridlines != next.ShowGridlines;
+        if (options.ShowPageBreaks != next.ShowPageBreaks)
+            foreach (var pane in panes) pane.SetPageBreakPreview(next.ShowPageBreaks);
         options = next;
         SetColumns();
         if (redraw) DrawSheet();

@@ -35,6 +35,7 @@ try
     CheckThreeWayXml();
     MergeChecks.Run(scratch.FullName, a, Check);
     DrawingChecks.Run(scratch.FullName, a, Check);
+    PrintChecks.Run(scratch.FullName, a, Check);
     FolderMergeChecks.Run(scratch.FullName, a, Check);
     PackageChecks.Run(scratch.FullName, a, Check);
     Check(keyed.Differences.Any(d => d is { Kind: ChangeKind.RowLayout, Left: "20", Right: "26", LeftRow: 2, RightRow: 2 }), "行高を左右の行に結び付ける");

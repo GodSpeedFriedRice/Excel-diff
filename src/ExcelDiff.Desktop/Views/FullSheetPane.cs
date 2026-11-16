@@ -14,10 +14,16 @@ internal sealed class FullSheetPane : UserControl
     private PreviewChanges? marks;
     private readonly VScrollBar vertical = new() { Dock = DockStyle.Fill, Minimum = 1, LargeChange = 18, Enabled = false };
     private readonly HScrollBar horizontal = new() { Dock = DockStyle.Fill, Minimum = 1, LargeChange = 8, Enabled = false };
+    private readonly Label pageInfo = new()
+    {
+        AutoSize = true, Visible = false, ForeColor = Appearance.Muted, Margin = new Padding(5, 1, 2, 2),
+        AccessibleName = "印刷範囲とページ数"
+    };
     private TileSession? session;
     private Sheet? source;
     private bool savedZoom;
     private bool showGridlines = true;
+    private bool pageBreakPreview;
     private double scale = 1;
     private bool date1904;
     private bool moving;
@@ -35,15 +41,18 @@ internal sealed class FullSheetPane : UserControl
     {
         Dock = DockStyle.Fill;
         surface = new Surface(this) { Dock = DockStyle.Fill, AccessibleName = "全体プレビュー" };
-        var layout = new TableLayoutPanel { ColumnCount = 2, RowCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty };
+        var layout = new TableLayoutPanel { ColumnCount = 2, RowCount = 3, Dock = DockStyle.Fill, Margin = Padding.Empty };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SystemInformation.VerticalScrollBarWidth));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, SystemInformation.HorizontalScrollBarHeight));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         foreach (var control in new Control[] { surface, vertical, horizontal }) control.Margin = Padding.Empty;
         layout.Controls.Add(surface, 0, 0);
         layout.Controls.Add(vertical, 1, 0);
         layout.Controls.Add(horizontal, 0, 1);
+        layout.Controls.Add(pageInfo, 0, 2);
+        layout.SetColumnSpan(pageInfo, 2);
         Controls.Add(layout);
         vertical.ValueChanged += (_, _) => ScrollbarChanged();
         horizontal.ValueChanged += (_, _) => ScrollbarChanged();
@@ -70,6 +79,16 @@ internal sealed class FullSheetPane : UserControl
         ResetSession();
         RefreshVisible();
     }
+
+    internal void SetPageBreakPreview(bool enabled)
+    {
+        if (pageBreakPreview == enabled) return;
+        pageBreakPreview = enabled;
+        if (source is null) return;
+        ResetSession();
+        SetPosition(row, column);
+    }
+
     internal event Action<CellPick>? Picked;
 
     internal void SetChanges(IReadOnlyList<Difference>? differences, bool before)
@@ -90,11 +109,6 @@ internal sealed class FullSheetPane : UserControl
             savedZoom = useSavedZoom;
             date1904 = use1904;
             ResetSession();
-            moving = true;
-            vertical.Maximum = (session?.Raster.LastRow ?? 1) + vertical.LargeChange - 1;
-            horizontal.Maximum = (session?.Raster.LastColumn ?? 1) + horizontal.LargeChange - 1;
-            vertical.Enabled = horizontal.Enabled = session is not null;
-            moving = false;
         }
 
         highlightedRow = mark ? targetRow : 0;
@@ -327,6 +341,9 @@ internal sealed class FullSheetPane : UserControl
             if (active.Failed)
                 TextRenderer.DrawText(graphics, "プレビュー画像を読み込めません", Font, new Point(HeaderWidth + 8, HeaderHeight + 8), Appearance.Muted);
         }
+        if (active.Raster.PrintLayout is { } print && visibleRows.Length > 0 && visibleColumns.Length > 0)
+            print.Draw(graphics, body, Font, number => ColumnOffset(active.Raster, number), number => RowOffset(active.Raster, number),
+                visibleRows[0], visibleRows[^1], visibleColumns[0], visibleColumns[^1]);
         DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, outline);
         DrawSelection(graphics, active.Raster, body);
         graphics.Restore(state);
@@ -479,7 +496,14 @@ internal sealed class FullSheetPane : UserControl
     {
         ReleaseSession();
         if (source is not null)
-            session = new TileSession(new SheetRaster(source, Font, savedZoom, date1904, showGridlines));
+            session = new TileSession(new SheetRaster(source, Font, savedZoom, date1904, showGridlines, pageBreakPreview));
+        moving = true;
+        vertical.Maximum = (session?.Raster.LastRow ?? 1) + vertical.LargeChange - 1;
+        horizontal.Maximum = (session?.Raster.LastColumn ?? 1) + horizontal.LargeChange - 1;
+        vertical.Enabled = horizontal.Enabled = session is not null;
+        moving = false;
+        pageInfo.Text = session?.Raster.PrintLayout?.Summary ?? "";
+        pageInfo.Visible = pageInfo.Text.Length > 0;
     }
 
     private void ReleaseSession()

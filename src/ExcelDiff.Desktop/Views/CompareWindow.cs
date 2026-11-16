@@ -63,6 +63,8 @@ internal sealed class CompareWindow : Form
         find.Click += (_, _) => OpenSearch();
         view.DropDownItems.Add(find);
         var settings = new ToolStripMenuItem("設定");
+        AddPreviewOption("改ページプレビュー", previewOptions.ShowPageBreaks,
+            (current, enabled) => current with { ShowPageBreaks = enabled }, view);
         AddPreviewOption("周辺を表示", previewOptions.ShowNearby, (current, enabled) => current with { ShowNearby = enabled });
         AddPreviewOption("保存倍率を使う", previewOptions.UseSavedZoom, (current, enabled) => current with { UseSavedZoom = enabled });
         AddPreviewOption("グリッド線を表示", previewOptions.ShowGridlines, (current, enabled) => current with { ShowGridlines = enabled });
@@ -164,7 +166,8 @@ internal sealed class CompareWindow : Form
         };
         UpdateStatus();
 
-        void AddPreviewOption(string caption, bool value, Func<PreviewOptions, bool, PreviewOptions> change)
+        void AddPreviewOption(string caption, bool value, Func<PreviewOptions, bool, PreviewOptions> change,
+            ToolStripMenuItem? menuItem = null)
         {
             var item = new ToolStripMenuItem(caption) { Checked = value, CheckOnClick = true };
             item.CheckedChanged += (_, _) =>
@@ -177,7 +180,7 @@ internal sealed class CompareWindow : Form
                 }
                 LocalSettings.Save(previewSettingsPath, previewOptions);
             };
-            settings.DropDownItems.Add(item);
+            (menuItem ?? settings).DropDownItems.Add(item);
         }
     }
 

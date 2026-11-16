@@ -23,6 +23,9 @@ internal sealed class SheetRaster : IDisposable
     private readonly PreviewPictures pictures;
 
     internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904, bool showGridlines)
+        : this(sheet, defaultFont, savedZoom, date1904, showGridlines, false) { }
+
+    internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904, bool showGridlines, bool pageBreakPreview)
     {
         this.sheet = sheet;
         this.defaultFont = (Font)defaultFont.Clone();
@@ -37,12 +40,20 @@ internal sealed class SheetRaster : IDisposable
             sheet.Rows.Values.SelectMany(cells => cells.Keys).DefaultIfEmpty().Max());
         var mergedRow = sheet.Merges.Ranges.Select(range => range.LastRow).DefaultIfEmpty().Max();
         var mergedColumn = sheet.Merges.Ranges.Select(range => range.LastColumn).DefaultIfEmpty().Max();
-        LastRow = Math.Min(Rows.Limit, Math.Max(30, Math.Max(pictures.LastRow, Math.Max(Rows.LastSized, Math.Max(lastRow, mergedRow))) + 16));
-        LastColumn = Math.Min(Columns.Limit, Math.Max(18, Math.Max(pictures.LastColumn, Math.Max(Columns.LastSized, Math.Max(lastColumn, mergedColumn))) + 8));
+        var usedRow = Math.Max(pictures.LastRow, Math.Max(lastRow, mergedRow));
+        var usedColumn = Math.Max(pictures.LastColumn, Math.Max(lastColumn, mergedColumn));
+        if (pageBreakPreview)
+            PrintLayout = new PreviewPrintLayout(sheet, zoom == 1 ? Rows : new PreviewAxis(sheet, true, 1),
+                zoom == 1 ? Columns : new PreviewAxis(sheet, false, 1), usedRow, usedColumn);
+        LastRow = Math.Min(Rows.Limit, Math.Max(30,
+            Math.Max(PrintLayout?.LastRow ?? 0, Math.Max(usedRow, Rows.LastSized)) + 16));
+        LastColumn = Math.Min(Columns.Limit, Math.Max(18,
+            Math.Max(PrintLayout?.LastColumn ?? 0, Math.Max(usedColumn, Columns.LastSized)) + 8));
     }
 
     internal PreviewAxis Rows { get; }
     internal PreviewAxis Columns { get; }
+    internal PreviewPrintLayout? PrintLayout { get; }
     internal int LastRow { get; }
     // Keep horizontal navigation near the used range, while allowing overflow into visible blank columns.
     internal int LastColumn { get; }
