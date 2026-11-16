@@ -371,7 +371,7 @@ internal sealed class WorkbookView : UserControl
         };
     }
 
-    private static string DescribeDifference(Difference diff)
+    internal static string DescribeDifference(Difference diff)
     {
         var heading = $"{diff.Item}　{DescribeLocation(diff)}";
         return diff.Parts is { Count: > 0 } parts
