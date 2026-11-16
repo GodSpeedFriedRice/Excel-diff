@@ -17,8 +17,6 @@ internal sealed class WorkbookView : UserControl
     private readonly GridSort differenceSort;
     private readonly WheelZoom listZoom = new();
     private readonly WheelZoom fullZoom = new();
-    private readonly Label zoomIndicator = Appearance.Label("100%");
-    private Font? listZoomFont;
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
     private readonly TabPage list = new("差分一覧");
     private readonly TabPage full = new("全体プレビュー");
@@ -67,7 +65,7 @@ internal sealed class WorkbookView : UserControl
         var layout = Appearance.Stack();
         var toolbar = Appearance.Toolbar();
         toolbar.Controls.AddRange([sheetPicker,
-            Appearance.Button("↑ 前へ", () => MoveDifference(-1)), position, Appearance.Button("次へ ↓", () => MoveDifference(1)), zoomIndicator]);
+            Appearance.Button("↑ 前へ", () => MoveDifference(-1)), position, Appearance.Button("次へ ↓", () => MoveDifference(1))]);
         sheetPicker.Margin = new Padding(6, 8, 6, 4);
         Appearance.Row(layout, toolbar);
 
@@ -91,8 +89,7 @@ internal sealed class WorkbookView : UserControl
             });
         }
         differenceSort = new GridSort(differences, SortDifferences);
-        differences.RowHeightInfoNeeded += (_, e) => e.Height = (int)Math.Round(28 * listZoom.Scale);
-        differences.ZoomRequested += ZoomList;
+        differences.ZoomRequested += listZoom.Apply;
         differences.CellValueNeeded += FillDifference;
         differences.CellDoubleClick += (_, e) =>
         {
@@ -111,24 +108,33 @@ internal sealed class WorkbookView : UserControl
         listLayout.Controls.Add(differences, 0, 0);
         listLayout.Controls.Add(detail, 0, 1);
         listLayout.Controls.Add(previews, 0, 2);
+        listLayout.Controls.Add(new ZoomBar(listZoom), 0, 3);
         listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 56));
         listLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
+        listLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         list.Controls.Add(listLayout);
         xml.Controls.Add(xmlDiff);
         package.Controls.Add(packageDiff);
         var fullLayout = Appearance.Stack();
         Appearance.Row(fullLayout, Split(Pane("左 ・ 変更前", leftPath, leftFull), Pane("右 ・ 変更後", rightPath, rightFull)), fill: true);
         Appearance.Row(fullLayout, fullDetails);
+        Appearance.Row(fullLayout, new ZoomBar(fullZoom));
         full.Controls.Add(fullLayout);
         leftFull.Scrolled += rightFull.ScrollBy;
         rightFull.Scrolled += leftFull.ScrollBy;
         leftPreview.Scrolled += rightPreview.ScrollBy;
         rightPreview.Scrolled += leftPreview.ScrollBy;
-        leftFull.ZoomRequested += ZoomFull;
-        rightFull.ZoomRequested += ZoomFull;
-        leftPreview.ZoomRequested += ZoomList;
-        rightPreview.ZoomRequested += ZoomList;
+        leftFull.ZoomRequested += fullZoom.Apply;
+        rightFull.ZoomRequested += fullZoom.Apply;
+        leftPreview.ZoomRequested += listZoom.Apply;
+        rightPreview.ZoomRequested += listZoom.Apply;
+        fullZoom.Changed += () =>
+        {
+            leftFull.SetZoom(fullZoom.Scale);
+            rightFull.SetZoom(fullZoom.Scale);
+        };
+        listZoom.Changed += ApplyListZoom;
         leftFull.Picked += pick => SelectPreviewCell(pick, before: true);
         rightFull.Picked += pick => SelectPreviewCell(pick, before: false);
         leftPreview.Picked += pick => SelectPreviewCell(pick, before: true);
@@ -145,7 +151,6 @@ internal sealed class WorkbookView : UserControl
                 SelectDifference(Math.Max(0, differenceIndex), reveal: true);
             else
                 UpdateSelection();
-            UpdateZoomIndicator();
             if (views.SelectedTab == full) leftFull.FocusSurface();
             else if (views.SelectedTab == list) differences.Focus();
         };
@@ -189,48 +194,13 @@ internal sealed class WorkbookView : UserControl
             UpdateSelection(reveal: options.ShowNearby && !previous.ShowNearby);
     }
 
-    private void ZoomList(int delta)
+    private void ApplyListZoom()
     {
-        if (!listZoom.Apply(delta)) return;
-        var font = new Font(Font.FontFamily, (float)(Font.SizeInPoints * listZoom.Scale), Font.Style, GraphicsUnit.Point);
-        var previous = listZoomFont;
-        listZoomFont = font;
-        differences.SuspendLayout();
-        try
-        {
-            differences.Font = font;
-            differences.ColumnHeadersDefaultCellStyle.Font = font;
-            detail.Font = font;
-            differences.RowTemplate.Height = (int)Math.Round(28 * listZoom.Scale);
-            differences.ColumnHeadersHeight = (int)Math.Round(30 * listZoom.Scale);
-            listLayout.RowStyles[1].Height = (float)(76 * listZoom.Scale);
-            differences.RefreshRowHeight();
-        }
-        finally { differences.ResumeLayout(); }
-        previous?.Dispose();
-        UpdateZoomIndicator();
+        differences.SetZoom(listZoom.Scale);
+        detail.Font = differences.Font;
+        listLayout.RowStyles[1].Height = (float)Math.Clamp(76 * listZoom.Scale, 28, 120);
         leftPreview.SetZoom(listZoom.Scale);
         rightPreview.SetZoom(listZoom.Scale);
-    }
-
-    private void ZoomFull(int delta)
-    {
-        if (!fullZoom.Apply(delta)) return;
-        leftFull.SetZoom(fullZoom.Scale);
-        rightFull.SetZoom(fullZoom.Scale);
-        UpdateZoomIndicator();
-    }
-
-    private void UpdateZoomIndicator()
-    {
-        zoomIndicator.Visible = views.SelectedTab != xml;
-        zoomIndicator.Text = $"{(views.SelectedTab == full ? fullZoom.Percent : listZoom.Percent)}%";
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        base.Dispose(disposing);
-        if (disposing) listZoomFont?.Dispose();
     }
 
     internal void SelectSheet(string name)

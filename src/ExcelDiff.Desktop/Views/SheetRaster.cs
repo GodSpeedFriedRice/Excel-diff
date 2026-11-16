@@ -19,6 +19,7 @@ internal sealed class SheetRaster : IDisposable
     private readonly Dictionary<(string Name, float Size, FontStyle Style), Font> fonts = [];
     private readonly Dictionary<int, int[]> occupiedRows = [];
     private readonly PreviewStyles styles = new();
+    private readonly PreviewStyles overviewStyles = new();
     private readonly PreviewPictures pictures;
 
     internal SheetRaster(Sheet sheet, Font defaultFont, bool savedZoom, bool date1904, bool showGridlines)
@@ -50,6 +51,78 @@ internal sealed class SheetRaster : IDisposable
     internal int TileRows => TileCount(Rows.Position(LastRow + 1));
 
     private static int TileCount(long end) => (int)((end + TileSize - 1) / TileSize);
+
+    internal void DrawOverview(Graphics graphics, Rectangle bounds, long x, long y, double scale,
+        int[] visibleRows, int[] visibleColumns)
+    {
+        if (visibleRows.Length == 0 || visibleColumns.Length == 0) return;
+        int X(int column) => bounds.Left + (int)Math.Floor((Columns.Position(column) - x) * scale);
+        int Y(int row) => bounds.Top + (int)Math.Floor((Rows.Position(row) - y) * scale);
+        if (showGridlines)
+        {
+            using var pen = new Pen(PreviewBorders.GridlineColor);
+            var lastX = bounds.Left - 4;
+            foreach (var column in visibleColumns)
+            {
+                var at = X(column) - 1;
+                if (at - lastX < 4) continue;
+                graphics.DrawLine(pen, at, bounds.Top, at, Math.Min(bounds.Bottom, Y(visibleRows[^1] + 1)));
+                lastX = at;
+            }
+            var lastY = bounds.Top - 4;
+            foreach (var row in visibleRows)
+            {
+                var at = Y(row) - 1;
+                if (at - lastY < 4) continue;
+                graphics.DrawLine(pen, bounds.Left, at, bounds.Right, at);
+                lastY = at;
+            }
+        }
+        using var brush = new SolidBrush(Color.White);
+        var previousRow = int.MinValue;
+        foreach (var row in visibleRows)
+        {
+            if (Y(row) == previousRow || !sheet.Rows.TryGetValue(row, out var cells)) continue;
+            previousRow = Y(row);
+            var previousColumn = int.MinValue;
+            foreach (var (column, cell) in cells)
+            {
+                if (column < visibleColumns[0] || column > visibleColumns[^1] || X(column) == previousColumn) continue;
+                if (Columns.Position(column) == Columns.Position(column + 1)) continue;
+                previousColumn = X(column);
+                Paint(cell, row, column, row, column);
+            }
+        }
+        foreach (var range in sheet.Merges.InRows(visibleRows[0], visibleRows[^1]))
+        {
+            if (range.LastColumn < visibleColumns[0] || range.FirstColumn > visibleColumns[^1]) continue;
+            if (sheet.At(range.FirstRow, range.FirstColumn) is { } cell)
+                Paint(cell, range.FirstRow, range.FirstColumn, range.LastRow, range.LastColumn);
+        }
+        var state = graphics.Save();
+        graphics.TranslateTransform(bounds.Left, bounds.Top);
+        graphics.ScaleTransform((float)scale, (float)scale);
+        pictures.Draw(graphics, x, y, (int)Math.Ceiling(Math.Max(bounds.Width, bounds.Height) / scale));
+        graphics.Restore(state);
+
+        void Paint(Cell cell, int row, int column, int lastRow, int lastColumn)
+        {
+            var left = X(column);
+            var top = Y(row);
+            var width = Math.Max(1, X(lastColumn + 1) - left);
+            var height = Math.Max(1, Y(lastRow + 1) - top);
+            var style = overviewStyles.Get(cell.Format);
+            if (style.HasFill)
+            {
+                brush.Color = style.Background;
+                graphics.FillRectangle(brush, left, top, width, height);
+            }
+            if (cell.Value.Length == 0 && cell.Formula is null) return;
+            brush.Color = style.Foreground;
+            var inset = width >= 5 ? 1 : 0;
+            graphics.FillRectangle(brush, left + inset, top + height / 2, Math.Max(1, (width - inset) * 2 / 3), 1);
+        }
+    }
 
     internal Bitmap Render(PreviewTile tile)
     {

@@ -2,7 +2,7 @@ namespace ExcelDiff.Desktop.Views;
 
 internal sealed class PreviewBorders(long originX, long originY, bool showGridlines)
 {
-    private static readonly Color GridlineColor = Color.FromArgb(212, 212, 212);
+    internal static readonly Color GridlineColor = Color.FromArgb(212, 212, 212);
     private readonly Dictionary<Edge, PreviewStyle.Stroke> strokes = [];
     private readonly HashSet<Edge> grid = [];
     private readonly List<(Rectangle Bounds, PreviewStyle Style)> diagonals = [];

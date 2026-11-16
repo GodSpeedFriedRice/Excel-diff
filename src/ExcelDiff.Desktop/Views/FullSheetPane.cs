@@ -8,6 +8,7 @@ namespace ExcelDiff.Desktop.Views;
 
 internal sealed class FullSheetPane : UserControl
 {
+    private const double OverviewThreshold = .25;
     private readonly Surface surface;
     private IReadOnlyList<Difference>? indexedDifferences;
     private PreviewChanges? marks;
@@ -183,12 +184,19 @@ internal sealed class FullSheetPane : UserControl
 
     private const int HeaderWidth = 52;
     private const int HeaderHeight = 24;
+    private bool IsOverview => scale < OverviewThreshold;
 
     private void RefreshVisible()
     {
         if (surface.IsDisposed) return;
         surface.Invalidate();
         if (!surface.IsHandleCreated || !surface.Visible || session is not TileSession active || surface.Width <= HeaderWidth || surface.Height <= HeaderHeight) return;
+        if (IsOverview)
+        {
+            active.Visible = [];
+            active.Prefetch = [];
+            return;
+        }
         var x = active.Raster.Columns.Position(column);
         var y = active.Raster.Rows.Position(row);
         var firstX = (int)(x / SheetRaster.TileSize);
@@ -211,7 +219,7 @@ internal sealed class FullSheetPane : UserControl
 
     private void StartWorker(TileSession active)
     {
-        if (active.Working || active.Failed) return;
+        if (IsOverview || active.Working || active.Failed) return;
         var next = active.Next();
         if (next is PreviewTile tile) _ = Prepare(active, tile);
     }
@@ -298,22 +306,27 @@ internal sealed class FullSheetPane : UserControl
         using var outline = new Pen(Color.Transparent);
         var state = graphics.Save();
         graphics.IntersectClip(body);
-        if (scale != 1) graphics.InterpolationMode = InterpolationMode.Bilinear;
-        foreach (var tile in active.Visible)
+        if (IsOverview)
+            active.Raster.DrawOverview(graphics, body, x, y, scale, visibleRows, visibleColumns);
+        else
         {
-            if (!active.Images.TryGetValue(tile, out var image)) continue;
-            var tileX = (long)tile.Column * SheetRaster.TileSize - x;
-            var tileY = (long)tile.Row * SheetRaster.TileSize - y;
-            var left = HeaderWidth + ScreenPixels(tileX);
-            var top = HeaderHeight + ScreenPixels(tileY);
-            if (scale == 1) graphics.DrawImageUnscaled(image, left, top);
-            else
-                graphics.DrawImage(image, Rectangle.FromLTRB(left, top,
-                    HeaderWidth + ScreenPixels(tileX + SheetRaster.TileSize),
-                    HeaderHeight + ScreenPixels(tileY + SheetRaster.TileSize)));
+            if (scale != 1) graphics.InterpolationMode = InterpolationMode.Bilinear;
+            foreach (var tile in active.Visible)
+            {
+                if (!active.Images.TryGetValue(tile, out var image)) continue;
+                var tileX = (long)tile.Column * SheetRaster.TileSize - x;
+                var tileY = (long)tile.Row * SheetRaster.TileSize - y;
+                var left = HeaderWidth + ScreenPixels(tileX);
+                var top = HeaderHeight + ScreenPixels(tileY);
+                if (scale == 1) graphics.DrawImageUnscaled(image, left, top);
+                else
+                    graphics.DrawImage(image, Rectangle.FromLTRB(left, top,
+                        HeaderWidth + ScreenPixels(tileX + SheetRaster.TileSize),
+                        HeaderHeight + ScreenPixels(tileY + SheetRaster.TileSize)));
+            }
+            if (active.Failed)
+                TextRenderer.DrawText(graphics, "プレビュー画像を読み込めません", Font, new Point(HeaderWidth + 8, HeaderHeight + 8), Appearance.Muted);
         }
-        if (active.Failed)
-            TextRenderer.DrawText(graphics, "プレビュー画像を読み込めません", Font, new Point(HeaderWidth + 8, HeaderHeight + 8), Appearance.Muted);
         DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, outline);
         DrawSelection(graphics, active.Raster, body);
         graphics.Restore(state);
@@ -322,17 +335,29 @@ internal sealed class FullSheetPane : UserControl
         graphics.FillRectangle(headers, 0, 0, surface.Width, HeaderHeight);
         graphics.FillRectangle(headers, 0, HeaderHeight, HeaderWidth, surface.Height);
         DrawHeaderChanges(graphics, active.Raster, body, visibleRows, visibleColumns, tint, outline);
+        var nextColumnLabel = HeaderWidth;
         foreach (var number in visibleColumns)
         {
             var left = ColumnOffset(active.Raster, number);
             var right = ColumnOffset(active.Raster, number + 1);
+            if (IsOverview)
+            {
+                if (left < nextColumnLabel) continue;
+                nextColumnLabel = right = Math.Max(right, left + 27);
+            }
             TextRenderer.DrawText(graphics, Address.Column(number), Font, Rectangle.FromLTRB(left, 0, right, HeaderHeight),
                 Appearance.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
+        var nextRowLabel = HeaderHeight;
         foreach (var number in visibleRows)
         {
             var top = RowOffset(active.Raster, number);
             var bottom = RowOffset(active.Raster, number + 1);
+            if (IsOverview)
+            {
+                if (top < nextRowLabel) continue;
+                nextRowLabel = bottom = Math.Max(bottom, top + Font.Height + 2);
+            }
             TextRenderer.DrawText(graphics, number.ToString(), Font, Rectangle.FromLTRB(0, top, HeaderWidth, bottom),
                 Appearance.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
@@ -358,9 +383,19 @@ internal sealed class FullSheetPane : UserControl
         foreach (var r in visibleRows)
         {
             if (marks.CellsInRow(r) is not { } cells) continue;
-            foreach (var c in visibleColumns)
-                if (cells.TryGetValue(c, out var mark))
-                    DrawMark(graphics, body, CellBounds(raster, r, c, r, c), mark.Color, outline);
+            if (IsOverview)
+            {
+                foreach (var (column, mark) in cells)
+                    if (column >= visibleColumns[0] && column <= visibleColumns[^1] &&
+                        raster.Columns.Position(column + 1) > raster.Columns.Position(column))
+                        DrawMark(graphics, body, CellBounds(raster, r, column, r, column), mark.Color, outline);
+            }
+            else
+            {
+                foreach (var c in visibleColumns)
+                    if (cells.TryGetValue(c, out var mark))
+                        DrawMark(graphics, body, CellBounds(raster, r, c, r, c), mark.Color, outline);
+            }
         }
     }
 
@@ -403,8 +438,9 @@ internal sealed class FullSheetPane : UserControl
         Rectangle.FromLTRB(ColumnOffset(raster, firstColumn), RowOffset(raster, firstRow),
             ColumnOffset(raster, lastColumn + 1), RowOffset(raster, lastRow + 1));
 
-    private static void DrawMark(Graphics graphics, Rectangle clip, Rectangle bounds, Color color, Pen outline, SolidBrush? tint = null)
+    private void DrawMark(Graphics graphics, Rectangle clip, Rectangle bounds, Color color, Pen outline, SolidBrush? tint = null)
     {
+        if (IsOverview) bounds = new Rectangle(bounds.Left, bounds.Top, Math.Max(1, bounds.Width), Math.Max(1, bounds.Height));
         var visible = Rectangle.Intersect(clip, bounds);
         if (visible.Width <= 0 || visible.Height <= 0) return;
         var border = color == Appearance.Added ? Color.FromArgb(33, 122, 76) :
@@ -429,6 +465,11 @@ internal sealed class FullSheetPane : UserControl
         var right = markRow ? body.Right : ColumnOffset(raster, lastColumn + 1);
         var top = markColumn ? body.Top : RowOffset(raster, firstRow);
         var bottom = markColumn ? body.Bottom : RowOffset(raster, lastRow + 1);
+        if (IsOverview)
+        {
+            right = Math.Max(right, left + 2);
+            bottom = Math.Max(bottom, top + 2);
+        }
         if (right <= left || bottom <= top) return;
         using var pen = new Pen(Color.FromArgb(20, 111, 220), 2) { Alignment = PenAlignment.Inset };
         graphics.DrawRectangle(pen, left, top, right - left - 1, bottom - top - 1);

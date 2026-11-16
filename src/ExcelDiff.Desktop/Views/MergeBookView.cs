@@ -4,7 +4,8 @@ namespace ExcelDiff.Desktop.Views;
 
 internal sealed class MergeBookView : UserControl
 {
-    private readonly DataGridView grid = new();
+    private readonly DifferenceGrid grid = new();
+    private readonly WheelZoom zoom = new();
     private readonly GridSort sort;
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
     private readonly TabPage cellTab = new("差分・コンフリクト");
@@ -49,6 +50,8 @@ internal sealed class MergeBookView : UserControl
         grid.VirtualMode = true;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         grid.AccessibleName = "ブックのセル差分とコンフリクト";
+        grid.ZoomRequested += zoom.Apply;
+        zoom.Changed += () => grid.SetZoom(zoom.Scale);
         foreach (var (title, weight) in new[] { ("シート", 15), ("セル", 7), ("共通ベース", 18),
                      ("取り込み1", 18), ("取り込み2", 18), ("処理", 24) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight,
@@ -89,6 +92,7 @@ internal sealed class MergeBookView : UserControl
         var cells = Appearance.Stack();
         Appearance.Row(cells, grid, fill: true);
         Appearance.Row(cells, details);
+        Appearance.Row(cells, new ZoomBar(zoom));
         cellTab.Controls.Add(cells);
         previewTab.Controls.Add(preview);
         views.TabPages.AddRange([cellTab, previewTab]);

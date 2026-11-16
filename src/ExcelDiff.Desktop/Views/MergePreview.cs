@@ -72,15 +72,16 @@ internal sealed class MergePreview : UserControl
                 foreach (var other in panes)
                     if (other != pane) other.ScrollTo(pane.TopRow, pane.LeftColumn);
             };
-            pane.ZoomRequested += delta =>
-            {
-                if (!zoom.Apply(delta)) return;
-                foreach (var other in panes) other.SetZoom(zoom.Scale);
-            };
+            pane.ZoomRequested += zoom.Apply;
             pane.Picked += pick => ShowPicked(index, pick);
         }
         Appearance.Row(layout, split, fill: true);
         Appearance.Row(layout, details);
+        Appearance.Row(layout, new ZoomBar(zoom));
+        zoom.Changed += () =>
+        {
+            foreach (var pane in panes) pane.SetZoom(zoom.Scale);
+        };
         Controls.Add(layout);
         SetColumns();
     }
