@@ -67,11 +67,6 @@ internal sealed class MergePreview : UserControl
             panels[i] = panel;
             split.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100 / 3f));
             split.Controls.Add(panel, i, 0);
-            pane.Scrolled += (_, _) =>
-            {
-                foreach (var other in panes)
-                    if (other != pane) other.ScrollTo(pane.TopRow, pane.LeftColumn);
-            };
             pane.ZoomRequested += zoom.Apply;
             pane.Picked += pick => ShowPicked(index, pick);
         }
@@ -163,6 +158,7 @@ internal sealed class MergePreview : UserControl
             split.ColumnStyles[i].SizeType = i == hiddenPane ? SizeType.Absolute : SizeType.Percent;
             split.ColumnStyles[i].Width = i == hiddenPane ? 0 : hiddenPane < 0 ? 100 / 3f : 50;
         }
+        FullSheetPane.LinkScroll(panes, hiddenPane);
         if (sheets.SelectedItem is string name) LoadMarks(name);
     }
 

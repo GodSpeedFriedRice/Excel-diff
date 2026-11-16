@@ -31,6 +31,7 @@ try
         { LeftAddress: "D1:F1", RightAddress: "D1:E1", Parts.Count: 1 }, "結合範囲の変更を1件にまとめる");
     CheckMergedCells(left.Sheets[0]);
     CheckAxisChanges(scratch.FullName);
+    CheckContentExtent(scratch.FullName);
     CheckXmlDiff();
     CheckThreeWayXml();
     MergeChecks.Run(scratch.FullName, a, Check);
@@ -229,7 +230,20 @@ static void CheckAxisChanges(string root)
         { Item: "既定の行高", Left: "15", Right: "18" }, "既定の高さを変えてもシートの設定1件");
 }
 
-static void MakeBook(string path, bool updated, bool inline = false, bool? axis = null)
+static void CheckContentExtent(string root)
+{
+    var path = Path.Combine(root, "content-extent.xlsx");
+    MakeBook(path, updated: false, extraRows: """
+        <row r="5000"><c r="K5000"><f>IF(TRUE,"",1)</f></c></row>
+        <row r="1048576" ht="30" customHeight="1"><c r="XFD1048576" s="1"/></row>
+        """);
+    var sheet = XlsxReader.Read(path).Sheets.Single();
+    Check(sheet.ContentExtent == (5000, 11), "キャッシュ値が空の数式を含め、書式だけのセルを除いてデータ範囲を求める");
+    Check(sheet.UsedCellExtent == (1048576, 16384) && sheet.At(1048576, 16384) is not null,
+        "末尾の書式だけのセルも比較・印刷用の使用範囲には残す");
+}
+
+static void MakeBook(string path, bool updated, bool inline = false, bool? axis = null, string extraRows = "")
 {
     const string ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     const string relationships = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -300,6 +314,7 @@ static void MakeBook(string path, bool updated, bool inline = false, bool? axis 
             <row r="3"><c r="A3" t="inlineStr"><is><t>{(updated ? "P-103" : "P-102")}</t></is></c></row>
             <row r="4"><c r="A4" t="inlineStr"><is><t>P-104</t></is></c></row>
             {axisRows}
+            {extraRows}
           </sheetData>
           <mergeCells><mergeCell ref="{(updated ? "D1:E1" : "D1:F1")}"/></mergeCells>
           <pageSetup scale="{(updated ? 80 : 95)}"/>

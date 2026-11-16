@@ -17,6 +17,7 @@ public sealed record Sheet(string Name, string Visibility,
         RowFormats.GetValueOrDefault(row) ?? ColumnFormats.GetValueOrDefault(column) ?? DefaultFormat;
 
     public (int Row, int Column)? UsedCellExtent { get; init; }
+    public (int Row, int Column)? ContentExtent { get; init; }
     public string? XmlPartPath { get; init; }
     public SheetPrintSettings PrintSettings { get; init; } = SheetPrintSettings.Empty;
     public IReadOnlyList<SheetPicture> Pictures { get; init; } = [];

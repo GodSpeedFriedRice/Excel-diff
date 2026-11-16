@@ -121,10 +121,8 @@ internal sealed class WorkbookView : UserControl
         Appearance.Row(fullLayout, fullDetails);
         Appearance.Row(fullLayout, new ZoomBar(fullZoom));
         full.Controls.Add(fullLayout);
-        leftFull.Scrolled += rightFull.ScrollBy;
-        rightFull.Scrolled += leftFull.ScrollBy;
-        leftPreview.Scrolled += rightPreview.ScrollBy;
-        rightPreview.Scrolled += leftPreview.ScrollBy;
+        FullSheetPane.LinkScroll([leftFull, rightFull], byDelta: true);
+        FullSheetPane.LinkScroll([leftPreview, rightPreview], byDelta: true);
         leftFull.ZoomRequested += fullZoom.Apply;
         rightFull.ZoomRequested += fullZoom.Apply;
         leftPreview.ZoomRequested += listZoom.Apply;

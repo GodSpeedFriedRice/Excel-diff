@@ -29,6 +29,12 @@ internal sealed class FullSheetPane : UserControl
     private bool moving;
     private int row = 1;
     private int column = 1;
+    private FullSheetPane[]? scrollGroup;
+    private bool scrollByDelta;
+    private int lastRow = 1;
+    private int lastColumn = 1;
+    private int revealedRow;
+    private int revealedColumn;
     private int wheelRemainder;
     private int highlightedRow;
     private int highlightedColumn;
@@ -56,19 +62,18 @@ internal sealed class FullSheetPane : UserControl
         Controls.Add(layout);
         vertical.ValueChanged += (_, _) => ScrollbarChanged();
         horizontal.ValueChanged += (_, _) => ScrollbarChanged();
-        surface.Resize += (_, _) => RefreshVisible();
+        surface.Resize += (_, _) => UpdateScrollBounds();
         surface.HandleCreated += (_, _) => RefreshVisible();
         surface.VisibleChanged += (_, _) => RefreshVisible();
     }
 
-    internal event Action<int, int>? Scrolled;
     internal event Action<int>? ZoomRequested;
 
     internal void SetZoom(double zoom)
     {
         if (scale == zoom) return;
         scale = zoom;
-        RefreshVisible();
+        UpdateScrollBounds();
     }
 
     internal void SetGridlines(bool visible)
@@ -77,7 +82,6 @@ internal sealed class FullSheetPane : UserControl
         showGridlines = visible;
         if (source is null) return;
         ResetSession();
-        RefreshVisible();
     }
 
     internal void SetPageBreakPreview(bool enabled)
@@ -86,7 +90,6 @@ internal sealed class FullSheetPane : UserControl
         pageBreakPreview = enabled;
         if (source is null) return;
         ResetSession();
-        SetPosition(row, column);
     }
 
     internal event Action<CellPick>? Picked;
@@ -103,6 +106,13 @@ internal sealed class FullSheetPane : UserControl
         bool rowLayout, bool columnLayout, bool useSavedZoom, bool use1904, bool jump, bool mark, int count)
     {
         var sheetChanged = !ReferenceEquals(source, sheet);
+        var newRevealRow = mark && !columnLayout ? merge?.FirstRow ?? targetRow : 0;
+        var newRevealColumn = mark && !rowLayout ? merge?.FirstColumn ?? targetColumn : 0;
+        var boundsChanged = session?.Raster is { } raster &&
+            (newRevealRow != revealedRow && Math.Max(newRevealRow, revealedRow) > raster.LastRow ||
+             newRevealColumn != revealedColumn && Math.Max(newRevealColumn, revealedColumn) > raster.LastColumn);
+        revealedRow = newRevealRow;
+        revealedColumn = newRevealColumn;
         if (sheetChanged || savedZoom != useSavedZoom || date1904 != use1904)
         {
             source = sheet;
@@ -110,6 +120,7 @@ internal sealed class FullSheetPane : UserControl
             date1904 = use1904;
             ResetSession();
         }
+        else if (boundsChanged) UpdateScrollBounds();
 
         highlightedRow = mark ? targetRow : 0;
         highlightedColumn = mark ? targetColumn : 0;
@@ -126,7 +137,7 @@ internal sealed class FullSheetPane : UserControl
                 columnLayout ? row : Reveal(active.Raster.Rows, row, top, SourcePixels(surface.Height - HeaderHeight)),
                 rowLayout ? column : Reveal(active.Raster.Columns, column, left, SourcePixels(surface.Width - HeaderWidth)));
         }
-        else if (!sheetChanged) SetPosition(row, column);
+        surface.Invalidate();
     }
 
     private static int Reveal(PreviewAxis axis, int first, int target, int available)
@@ -146,37 +157,100 @@ internal sealed class FullSheetPane : UserControl
         surface.Invalidate();
     }
 
-    internal void ScrollBy(int rows, int columns) => SetPosition(row + rows, column + columns);
+    internal static void LinkScroll(FullSheetPane[] panes, int hidden = -1, bool byDelta = false)
+    {
+        var visible = hidden < 0 ? panes : panes.Where((_, index) => index != hidden).ToArray();
+        foreach (var pane in panes)
+        {
+            pane.scrollGroup = visible.Contains(pane) ? visible : null;
+            pane.scrollByDelta = byDelta;
+        }
+        visible[0].UpdateScrollBounds();
+        if (hidden >= 0) panes[hidden].UpdateScrollBounds();
+    }
 
-    internal int TopRow => row;
-    internal int LeftColumn => column;
-    internal void ScrollTo(int top, int left) => SetPosition(top, left);
+    private void UpdateScrollBounds()
+    {
+        if (IsDisposed || Disposing) return;
+        var group = scrollGroup ?? [this];
+        var endRow = 1;
+        var endColumn = 1;
+        foreach (var pane in group)
+        {
+            if (pane.session?.Raster is not { } raster) continue;
+            endRow = Math.Max(endRow, raster.LastRow);
+            endColumn = Math.Max(endColumn, raster.LastColumn);
+            if (pane.revealedRow > raster.LastRow)
+                endRow = Math.Max(endRow, Math.Min(raster.Rows.Limit, pane.revealedRow + SheetRaster.RowPadding));
+            if (pane.revealedColumn > raster.LastColumn)
+                endColumn = Math.Max(endColumn, Math.Min(raster.Columns.Limit, pane.revealedColumn + SheetRaster.ColumnPadding));
+        }
+
+        var maxTop = 1;
+        var maxLeft = 1;
+        foreach (var pane in group)
+        {
+            if (pane.session?.Raster is not { } raster) continue;
+            maxTop = Math.Max(maxTop, raster.Rows.LastStart(endRow, pane.SourcePixels(pane.surface.Height - HeaderHeight)));
+            maxLeft = Math.Max(maxLeft, raster.Columns.LastStart(endColumn, pane.SourcePixels(pane.surface.Width - HeaderWidth)));
+        }
+
+        // The panes share scroll addresses even when their contents and cell sizes differ.
+        foreach (var pane in group)
+        {
+            if (pane.IsDisposed || pane.Disposing) continue;
+            pane.lastRow = endRow;
+            pane.lastColumn = endColumn;
+            pane.moving = true;
+            pane.vertical.Maximum = maxTop + pane.vertical.LargeChange - 1;
+            pane.horizontal.Maximum = maxLeft + pane.horizontal.LargeChange - 1;
+            pane.vertical.Enabled = pane.session is not null && maxTop > 1;
+            pane.horizontal.Enabled = pane.session is not null && maxLeft > 1;
+            pane.SetPosition(pane.row, pane.column);
+        }
+    }
 
     private void SetPosition(int top, int left)
     {
+        top = Math.Clamp(top, 1, vertical.Maximum - vertical.LargeChange + 1);
+        left = Math.Clamp(left, 1, horizontal.Maximum - horizontal.LargeChange + 1);
+        if (!moving && row == top && column == left) return;
         moving = true;
-        row = vertical.Value = Math.Clamp(top, 1, vertical.Maximum - vertical.LargeChange + 1);
-        column = horizontal.Value = Math.Clamp(left, 1, horizontal.Maximum - horizontal.LargeChange + 1);
+        row = vertical.Value = top;
+        column = horizontal.Value = left;
         moving = false;
         RefreshVisible();
+    }
+
+    private void SyncPosition(int previousRow, int previousColumn)
+    {
+        if (scrollGroup is null || row == previousRow && column == previousColumn) return;
+        foreach (var pane in scrollGroup)
+        {
+            if (pane == this) continue;
+            // Matching key values can place the selected rows at different addresses.
+            var top = scrollByDelta ? pane.row + row - previousRow : row;
+            var left = scrollByDelta ? pane.column + column - previousColumn : column;
+            pane.SetPosition(top, left);
+        }
     }
 
     private void ScrollbarChanged()
     {
         if (moving) return;
-        var rows = vertical.Value - row;
-        var columns = horizontal.Value - column;
+        var previousRow = row;
+        var previousColumn = column;
         row = vertical.Value;
         column = horizontal.Value;
         RefreshVisible();
-        if (rows != 0 || columns != 0) Scrolled?.Invoke(rows, columns);
+        SyncPosition(previousRow, previousColumn);
     }
 
     private void Wheel(MouseEventArgs e)
     {
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
         if ((ModifierKeys & Keys.Control) != 0)
         {
-            if (e is HandledMouseEventArgs handled) handled.Handled = true;
             ZoomRequested?.Invoke(e.Delta);
             return;
         }
@@ -190,10 +264,10 @@ internal sealed class FullSheetPane : UserControl
         var previousRow = row;
         var previousColumn = column;
         if ((ModifierKeys & Keys.Shift) != 0)
-            ScrollBy(0, -ticks * (step < 0 ? horizontal.LargeChange : step));
+            SetPosition(row, column - ticks * (step < 0 ? horizontal.LargeChange : step));
         else
-            ScrollBy(-ticks * (step < 0 ? vertical.LargeChange : step), 0);
-        Scrolled?.Invoke(row - previousRow, column - previousColumn);
+            SetPosition(row - ticks * (step < 0 ? vertical.LargeChange : step), column);
+        SyncPosition(previousRow, previousColumn);
     }
 
     private const int HeaderWidth = 52;
@@ -274,8 +348,8 @@ internal sealed class FullSheetPane : UserControl
         var raster = active.Raster;
         var x = raster.Columns.Position(column) + SourceOffset(point.X - HeaderWidth);
         var y = raster.Rows.Position(row) + SourceOffset(point.Y - HeaderHeight);
-        if ((!inRowHeader && x >= raster.Columns.Position(raster.Columns.Limit + 1)) ||
-            (!inColumnHeader && y >= raster.Rows.Position(raster.LastRow + 1))) return;
+        if ((!inRowHeader && x >= raster.Columns.Position(lastColumn + 1)) ||
+            (!inColumnHeader && y >= raster.Rows.Position(lastRow + 1))) return;
         int? pickedRow = inColumnHeader ? null : raster.Rows.AtPixel(y);
         int? pickedColumn = inRowHeader ? null : raster.Columns.AtPixel(x);
         var mark = marks?.Pick(pickedRow, pickedColumn);
@@ -314,8 +388,8 @@ internal sealed class FullSheetPane : UserControl
         var body = Rectangle.FromLTRB(HeaderWidth, HeaderHeight, Math.Max(HeaderWidth, surface.Width), Math.Max(HeaderHeight, surface.Height));
         var x = active.Raster.Columns.Position(column);
         var y = active.Raster.Rows.Position(row);
-        var visibleRows = active.Raster.Rows.Visible(row, active.Raster.LastRow, SourcePixels(body.Height));
-        var visibleColumns = active.Raster.Columns.Visible(column, active.Raster.Columns.Limit, SourcePixels(body.Width));
+        var visibleRows = active.Raster.Rows.Visible(row, lastRow, SourcePixels(body.Height));
+        var visibleColumns = active.Raster.Columns.Visible(column, lastColumn, SourcePixels(body.Width));
         using var tint = new SolidBrush(Color.Transparent);
         using var outline = new Pen(Color.Transparent);
         var state = graphics.Save();
@@ -497,13 +571,9 @@ internal sealed class FullSheetPane : UserControl
         ReleaseSession();
         if (source is not null)
             session = new TileSession(new SheetRaster(source, Font, savedZoom, date1904, showGridlines, pageBreakPreview));
-        moving = true;
-        vertical.Maximum = (session?.Raster.LastRow ?? 1) + vertical.LargeChange - 1;
-        horizontal.Maximum = (session?.Raster.LastColumn ?? 1) + horizontal.LargeChange - 1;
-        vertical.Enabled = horizontal.Enabled = session is not null;
-        moving = false;
         pageInfo.Text = session?.Raster.PrintLayout?.Summary ?? "";
         pageInfo.Visible = pageInfo.Text.Length > 0;
+        UpdateScrollBounds();
     }
 
     private void ReleaseSession()
@@ -550,10 +620,10 @@ internal sealed class FullSheetPane : UserControl
         internal TileSession(SheetRaster raster)
         {
             Raster = raster;
-            keepOnDisk = (long)raster.TileRows * raster.UsedTileColumns > ResidentLimit;
+            keepOnDisk = (long)raster.TileRows * raster.TileColumns > ResidentLimit;
             if (!keepOnDisk)
                 for (var tileRow = 0; tileRow < raster.TileRows; tileRow++)
-                    for (var tileColumn = 0; tileColumn < raster.UsedTileColumns; tileColumn++)
+                    for (var tileColumn = 0; tileColumn < raster.TileColumns; tileColumn++)
                         eager.Enqueue(new PreviewTile(tileColumn, tileRow));
         }
 
@@ -577,7 +647,7 @@ internal sealed class FullSheetPane : UserControl
 
         internal Bitmap Load(PreviewTile tile)
         {
-            if (!keepOnDisk && tile.Column < Raster.UsedTileColumns) return Raster.Render(tile);
+            if (!keepOnDisk) return Raster.Render(tile);
             directory ??= Directory.CreateTempSubdirectory("excel-diff-preview-");
             var path = Path.Combine(directory.FullName, $"{tile.Column}-{tile.Row}.png");
             if (File.Exists(path))
@@ -605,8 +675,7 @@ internal sealed class FullSheetPane : UserControl
             if (Images.Count <= Math.Max(ResidentLimit, Visible.Length + 6)) return;
             foreach (var candidate in Images.Keys)
             {
-                if ((!keepOnDisk && candidate.Column < Raster.UsedTileColumns) ||
-                    candidate == tile || Visible.Contains(candidate)) continue;
+                if (candidate == tile || Visible.Contains(candidate)) continue;
                 Images[candidate].Dispose();
                 Images.Remove(candidate);
                 break;

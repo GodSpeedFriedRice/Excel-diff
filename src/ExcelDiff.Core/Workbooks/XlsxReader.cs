@@ -114,6 +114,8 @@ public static partial class XlsxReader
         var rowIndex = 0;
         var lastUsedRow = 0;
         var lastUsedColumn = 0;
+        var lastContentRow = 0;
+        var lastContentColumn = 0;
         foreach (var row in rowElements)
         {
             token.ThrowIfCancellationRequested();
@@ -159,7 +161,13 @@ public static partial class XlsxReader
                 }
                 var inherited = rowFormat ?? columnStyles.GetValueOrDefault(column) ?? styles[0];
                 var format = (int?)cell.Attribute("s") is int cellStyle ? styles[cellStyle] : inherited;
-                if (value.Length != 0 || formula is not null || rich || !ReferenceEquals(format, inherited))
+                var hasContent = value.Length != 0 || formula is not null || rich;
+                if (hasContent)
+                {
+                    lastContentRow = Math.Max(lastContentRow, rowIndex);
+                    lastContentColumn = Math.Max(lastContentColumn, column);
+                }
+                if (hasContent || !ReferenceEquals(format, inherited))
                 {
                     cells.Add(column, new Cell(kind, value, formula, format) { HasRichText = rich });
                     lastUsedColumn = Math.Max(lastUsedColumn, column);
@@ -176,6 +184,7 @@ public static partial class XlsxReader
             RowFormats = rowStyles,
             ColumnFormats = columnStyles,
             UsedCellExtent = (lastUsedRow, lastUsedColumn),
+            ContentExtent = (lastContentRow, lastContentColumn),
             PrintSettings = print,
             XmlPartPath = partPath
         };

@@ -10,6 +10,8 @@ internal readonly record struct PreviewTile(int Column, int Row);
 internal sealed class SheetRaster : IDisposable
 {
     internal const int TileSize = 512;
+    internal const int RowPadding = 24;
+    internal const int ColumnPadding = 16;
     private const int BorderBleed = 3;
     private readonly Sheet sheet;
     private readonly Font defaultFont;
@@ -36,48 +38,67 @@ internal sealed class SheetRaster : IDisposable
         Rows = new PreviewAxis(sheet, rows: true, zoom);
         Columns = new PreviewAxis(sheet, rows: false, zoom);
         pictures = new PreviewPictures(sheet, Rows, Columns, zoom);
-        var (lastRow, lastColumn) = sheet.UsedCellExtent ?? (sheet.Rows.Keys.DefaultIfEmpty().Max(),
-            sheet.Rows.Values.SelectMany(cells => cells.Keys).DefaultIfEmpty().Max());
+        var (lastRow, lastColumn) = sheet.ContentExtent ?? FindContent(sheet);
         var mergedRow = sheet.Merges.Ranges.Select(range => range.LastRow).DefaultIfEmpty().Max();
         var mergedColumn = sheet.Merges.Ranges.Select(range => range.LastColumn).DefaultIfEmpty().Max();
         var usedRow = Math.Max(pictures.LastRow, Math.Max(lastRow, mergedRow));
         var usedColumn = Math.Max(pictures.LastColumn, Math.Max(lastColumn, mergedColumn));
         if (pageBreakPreview)
+        {
+            var printExtent = sheet.UsedCellExtent ?? (Row: usedRow, Column: usedColumn);
             PrintLayout = new PreviewPrintLayout(sheet, zoom == 1 ? Rows : new PreviewAxis(sheet, true, 1),
-                zoom == 1 ? Columns : new PreviewAxis(sheet, false, 1), usedRow, usedColumn);
-        LastRow = Math.Min(Rows.Limit, Math.Max(30,
-            Math.Max(PrintLayout?.LastRow ?? 0, Math.Max(usedRow, Rows.LastSized)) + 16));
-        LastColumn = Math.Min(Columns.Limit, Math.Max(18,
-            Math.Max(PrintLayout?.LastColumn ?? 0, Math.Max(usedColumn, Columns.LastSized)) + 8));
+                zoom == 1 ? Columns : new PreviewAxis(sheet, false, 1),
+                Math.Max(usedRow, printExtent.Row), Math.Max(usedColumn, printExtent.Column));
+        }
+        LastRow = Math.Min(Rows.Limit, Math.Max(1, Math.Max(PrintLayout?.LastRow ?? 0, usedRow)) + RowPadding);
+        LastColumn = Math.Min(Columns.Limit, Math.Max(1, Math.Max(PrintLayout?.LastColumn ?? 0, usedColumn)) + ColumnPadding);
     }
 
     internal PreviewAxis Rows { get; }
     internal PreviewAxis Columns { get; }
     internal PreviewPrintLayout? PrintLayout { get; }
     internal int LastRow { get; }
-    // Keep horizontal navigation near the used range, while allowing overflow into visible blank columns.
     internal int LastColumn { get; }
-    internal int TileColumns => TileCount(Columns.Position(Columns.Limit + 1));
-    internal int UsedTileColumns => TileCount(Columns.Position(LastColumn + 1));
+    internal int TileColumns => TileCount(Columns.Position(LastColumn + 1));
     internal int TileRows => TileCount(Rows.Position(LastRow + 1));
 
     private static int TileCount(long end) => (int)((end + TileSize - 1) / TileSize);
 
+    private static (int Row, int Column) FindContent(Sheet sheet)
+    {
+        var lastRow = 0;
+        var lastColumn = 0;
+        foreach (var (row, cells) in sheet.Rows)
+            foreach (var (column, cell) in cells)
+                if (cell.Value.Length > 0 || cell.Formula is not null)
+                {
+                    lastRow = Math.Max(lastRow, row);
+                    lastColumn = Math.Max(lastColumn, column);
+                }
+        return (lastRow, lastColumn);
+    }
+
     internal void DrawOverview(Graphics graphics, Rectangle bounds, long x, long y, double scale,
         int[] visibleRows, int[] visibleColumns)
     {
+        if (visibleRows.Length > 0 && visibleRows[^1] > LastRow)
+            visibleRows = visibleRows.TakeWhile(row => row <= LastRow).ToArray();
+        if (visibleColumns.Length > 0 && visibleColumns[^1] > LastColumn)
+            visibleColumns = visibleColumns.TakeWhile(column => column <= LastColumn).ToArray();
         if (visibleRows.Length == 0 || visibleColumns.Length == 0) return;
         int X(int column) => bounds.Left + (int)Math.Floor((Columns.Position(column) - x) * scale);
         int Y(int row) => bounds.Top + (int)Math.Floor((Rows.Position(row) - y) * scale);
         if (showGridlines)
         {
             using var pen = new Pen(PreviewBorders.GridlineColor);
+            var right = Math.Min(bounds.Right, X(visibleColumns[^1] + 1));
+            var bottom = Math.Min(bounds.Bottom, Y(visibleRows[^1] + 1));
             var lastX = bounds.Left - 4;
             foreach (var column in visibleColumns)
             {
                 var at = X(column) - 1;
                 if (at - lastX < 4) continue;
-                graphics.DrawLine(pen, at, bounds.Top, at, Math.Min(bounds.Bottom, Y(visibleRows[^1] + 1)));
+                graphics.DrawLine(pen, at, bounds.Top, at, bottom);
                 lastX = at;
             }
             var lastY = bounds.Top - 4;
@@ -85,7 +106,7 @@ internal sealed class SheetRaster : IDisposable
             {
                 var at = Y(row) - 1;
                 if (at - lastY < 4) continue;
-                graphics.DrawLine(pen, bounds.Left, at, bounds.Right, at);
+                graphics.DrawLine(pen, bounds.Left, at, right, at);
                 lastY = at;
             }
         }
@@ -147,7 +168,7 @@ internal sealed class SheetRaster : IDisposable
             var originX = (long)tile.Column * TileSize;
             var originY = (long)tile.Row * TileSize;
             var firstColumn = Columns.AtPixel(Math.Max(0, originX - BorderBleed));
-            var lastColumn = Columns.AtPixel(originX + TileSize - 1 + BorderBleed);
+            var lastColumn = Math.Min(LastColumn, Columns.AtPixel(originX + TileSize - 1 + BorderBleed));
             var firstRow = Rows.AtPixel(Math.Max(0, originY - BorderBleed));
             var lastRow = Math.Min(LastRow, Rows.AtPixel(originY + TileSize - 1 + BorderBleed));
             var columns = Columns.Visible(firstColumn, lastColumn, int.MaxValue);
@@ -242,7 +263,7 @@ internal sealed class SheetRaster : IDisposable
                         var align = cell.Format.GetValueOrDefault("配置/horizontal");
                         if (align is null or "general" or "left" or "center")
                         {
-                            var end = OccupiedNeighbor(occupied, column, forward: true) ?? Columns.Limit + 1;
+                            var end = Math.Min(LastColumn + 1, OccupiedNeighbor(occupied, column, forward: true) ?? LastColumn + 1);
                             if (mergeInsertion < merges.Count) end = Math.Min(end, merges[mergeInsertion].FirstColumn);
                             spill.Width = X(end) - spill.Left;
                         }

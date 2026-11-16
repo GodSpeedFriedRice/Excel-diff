@@ -41,11 +41,9 @@ internal sealed class PreviewAxis
             var (size, hidden) = settings[indices[i]];
             deltas[i + 1] = deltas[i] + (hidden || size == 0 ? 0 : Pixels(size)) - defaultSize;
         }
-        LastSized = indices.LastOrDefault();
     }
 
     internal int Limit { get; }
-    internal int LastSized { get; }
 
     internal long Position(int index)
     {
@@ -67,6 +65,14 @@ internal sealed class PreviewAxis
             else high = middle;
         }
         return low;
+    }
+
+    internal int LastStart(int last, int viewportPixels)
+    {
+        var offset = Position(last + 1) - Math.Max(1, viewportPixels);
+        if (offset <= 0) return 1;
+        var index = AtPixel(offset);
+        return Math.Min(last, Position(index) == offset ? index : index + 1);
     }
 
     internal int[] Visible(int first, int last, int pixels)
