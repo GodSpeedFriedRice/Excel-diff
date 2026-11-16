@@ -31,7 +31,9 @@ public static partial class XlsxReader
             ? Part(zip, Resolve(workbookPath, relation)) : null;
 
         var shared = Related("sharedStrings")?.Root?.Elements().Select(ReadCellText).ToArray() ?? [];
-        var formats = new StyleTable(Related("styles"), Related("theme"));
+        var theme = Related("theme");
+        var formats = new StyleTable(Related("styles"), theme);
+        var drawingTheme = includePictures ? new DrawingTheme(theme) : null;
         var sheets = new List<Sheet>();
         foreach (var entry in book.Element(ns + "sheets")?.Elements(ns + "sheet") ?? [])
         {
@@ -48,8 +50,11 @@ public static partial class XlsxReader
             var partPath = Resolve(workbookPath, relation);
             var sheet = ReadSheet(name, (string?)entry.Attribute("state") ?? "visible",
                 Part(zip, partPath), partPath, shared, formats, area?.Value, token);
-            if (includePictures)
-                sheet = sheet with { Pictures = ReadPictures(zip, sheet.Xml.Root!, partPath, path, stream.Length, lastWriteTime, token) };
+            if (drawingTheme is not null)
+            {
+                var (pictures, shapes) = ReadDrawings(zip, sheet.Xml.Root!, partPath, path, stream.Length, lastWriteTime, drawingTheme, token);
+                sheet = sheet with { Pictures = pictures, Shapes = shapes };
+            }
             sheets.Add(sheet);
         }
         return new Workbook(sheets, True((string?)book.Element(ns + "workbookPr")?.Attribute("date1904")));

@@ -7,26 +7,35 @@ namespace ExcelDiff.Core.Workbooks;
 
 public sealed record PictureAsset(string WorkbookPath, string PartPath, long WorkbookLength, DateTime LastWriteTimeUtc);
 public readonly record struct PictureMarker(int Row, int Column, long OffsetX, long OffsetY);
-public sealed record SheetPicture(PictureMarker From, PictureMarker? To, long Width, long Height, PictureAsset? Asset);
+public sealed record SheetPicture(PictureMarker From, PictureMarker? To, long Width, long Height, PictureAsset? Asset)
+{
+    public int Order { get; init; }
+}
 
 public static partial class XlsxReader
 {
-    private static IReadOnlyList<SheetPicture> ReadPictures(ZipArchive zip, XElement sheet, string sheetPath,
-        string workbookPath, long workbookLength, DateTime modifiedAt, CancellationToken token)
+    private static (IReadOnlyList<SheetPicture>, IReadOnlyList<SheetShape>) ReadDrawings(ZipArchive zip, XElement sheet, string sheetPath,
+        string workbookPath, long workbookLength, DateTime modifiedAt, DrawingTheme theme, CancellationToken token)
     {
         var drawingId = RelationshipId(sheet.Element(sheet.Name.Namespace + "drawing"), "id");
-        if (drawingId is null) return [];
+        if (drawingId is null) return ([], []);
 
         var sheetRelationships = ReadRelationships(zip, sheetPath);
         var drawingPath = ResolvePart(sheetPath, sheetRelationships, drawingId, "drawing");
-        if (drawingPath is null || ReadOptionalPart(zip, drawingPath)?.Root is not { } drawing) return [];
+        if (drawingPath is null || ReadOptionalPart(zip, drawingPath)?.Root is not { } drawing) return ([], []);
         var imageRelationships = ReadRelationships(zip, drawingPath);
         var pictures = new List<SheetPicture>();
+        var shapes = new List<SheetShape>();
+        var order = 0;
         var ns = drawing.Name.Namespace;
         foreach (var anchor in drawing.Elements())
         {
             token.ThrowIfCancellationRequested();
-            if (anchor.Element(ns + "pic") is not { } picture) continue;
+            order++;
+            var child = anchor.Elements().FirstOrDefault(node => node.Name.LocalName is "pic" or "sp" or "cxnSp" or "grpSp" or "graphicFrame");
+            if (child is null) continue;
+            var properties = child.Elements().FirstOrDefault()?.Element(ns + "cNvPr");
+            if (True((string?)properties?.Attribute("hidden"))) continue;
             var from = ReadMarker(anchor.Element(ns + "from"));
             var to = ReadMarker(anchor.Element(ns + "to"));
             var extent = anchor.Element(ns + "ext");
@@ -37,21 +46,26 @@ public static partial class XlsxReader
             if (from is not PictureMarker start) continue;
             var width = Number(extent?.Attribute("cx")?.Value) ?? 0;
             var height = Number(extent?.Attribute("cy")?.Value) ?? 0;
-            if (to is null && (width <= 0 || height <= 0)) continue;
+            if (to is null && (width < 0 || height < 0 || (width == 0 && height == 0))) continue;
 
-            var blip = picture.Element(ns + "blipFill")?.Elements().FirstOrDefault(e => e.Name.LocalName == "blip");
+            if (child.Name != ns + "pic")
+            {
+                shapes.Add(ReadShape(child, start, to, width, height, order, (string?)properties?.Attribute("name"), theme));
+                continue;
+            }
+
+            var blip = child.Element(ns + "blipFill")?.Elements().FirstOrDefault(e => e.Name.LocalName == "blip");
             var embedded = RelationshipId(blip, "embed");
             var path = embedded is null ? null : ResolvePart(drawingPath, imageRelationships, embedded, "image");
             var asset = path is null ? null : new PictureAsset(workbookPath, path, workbookLength, modifiedAt);
-            pictures.Add(new SheetPicture(start, to, width, height, asset));
+            pictures.Add(new SheetPicture(start, to, width, height, asset) { Order = order });
         }
-        return pictures;
+        return (pictures, shapes);
     }
 
     private static IEnumerable<XElement> ReadRelationships(ZipArchive zip, string part)
     {
-        var slash = part.LastIndexOf('/') + 1;
-        return ReadOptionalPart(zip, part[..slash] + "_rels/" + part[slash..] + ".rels")?.Root?.Elements() ?? [];
+        return ReadOptionalPart(zip, RelationshipsPath(part))?.Root?.Elements() ?? [];
     }
 
     private static XDocument? ReadOptionalPart(ZipArchive zip, string path)

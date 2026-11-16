@@ -60,42 +60,19 @@ internal sealed class PreviewStyle
         (column == range.FirstColumn ? BorderSides.Left : 0) | (row == range.FirstRow ? BorderSides.Top : 0) |
         (column == range.LastColumn ? BorderSides.Right : 0) | (row == range.LastRow ? BorderSides.Bottom : 0);
 
-    internal void DrawBorders(Graphics graphics, Pen pen, Rectangle bounds, BorderSides sides, PreviewStyle? anchor)
+    internal Stroke Edge(BorderSides side) => side switch
     {
-        var x = bounds.Left;
-        var y = bounds.Top;
-        var lastX = bounds.Right - 1;
-        var lastY = bounds.Bottom - 1;
-        if ((sides & BorderSides.Left) != 0)
-            Draw(WithFallback(left, anchor?.left), x, y, x, lastY, 1, 0);
-        if ((sides & BorderSides.Top) != 0)
-            Draw(WithFallback(top, anchor?.top), x, y, lastX, y, 0, 1);
-        if ((sides & BorderSides.Right) != 0)
-            Draw(WithFallback(right, anchor?.right), lastX, y, lastX, lastY, -1, 0);
-        if ((sides & BorderSides.Bottom) != 0)
-            Draw(WithFallback(bottom, anchor?.bottom), x, lastY, lastX, lastY, 0, -1);
-        if ((sides & BorderSides.Diagonal) != 0)
-        {
-            if (diagonalDown) Draw(diagonal, x, y, lastX, lastY, 0, 0);
-            if (diagonalUp) Draw(diagonal, x, lastY, lastX, y, 0, 0);
-        }
+        BorderSides.Left => left, BorderSides.Top => top, BorderSides.Right => right, BorderSides.Bottom => bottom, _ => default
+    };
 
-        void Draw(Stroke stroke, int x1, int y1, int x2, int y2, int dx, int dy)
-        {
-            if (stroke == default) return;
-            pen.Color = stroke.Color;
-            pen.Width = 1;
-            pen.DashStyle = stroke.Dash;
-            var room = dx != 0 ? bounds.Width : bounds.Height;
-            for (var offset = 0; offset < Math.Min(stroke.Width, room); offset++)
-            {
-                if (stroke.Double && offset == 1) continue;
-                graphics.DrawLine(pen, x1 + dx * offset, y1 + dy * offset, x2 + dx * offset, y2 + dy * offset);
-            }
-        }
+    internal void DrawDiagonal(Graphics graphics, Pen pen, Rectangle bounds)
+    {
+        pen.Color = diagonal.Color;
+        pen.Width = diagonal.Width;
+        pen.DashStyle = diagonal.Dash;
+        if (diagonalDown) graphics.DrawLine(pen, bounds.Left, bounds.Top, bounds.Right - 1, bounds.Bottom - 1);
+        if (diagonalUp) graphics.DrawLine(pen, bounds.Left, bounds.Bottom - 1, bounds.Right - 1, bounds.Top);
     }
-
-    private static Stroke WithFallback(Stroke edge, Stroke? fallback) => edge == default ? fallback.GetValueOrDefault() : edge;
 
     private static Stroke ReadStroke(IReadOnlyDictionary<string, string> format, string key)
     {
@@ -115,7 +92,8 @@ internal sealed class PreviewStyle
             "medium" or "mediumDashed" or "mediumDashDot" or "mediumDashDotDot" => 2,
             _ => 1
         };
-        return new Stroke(ReadColor(format, key + "/color", Color.Black), dash, width, style == "double");
+        return new Stroke(ReadColor(format, key + "/color", Color.Black), dash, width, style == "double",
+            style == "hair" ? 1 : width * 3 + (dash == DashStyle.Solid ? 1 : 0));
     }
 
     private static Color ReadColor(IReadOnlyDictionary<string, string> format, string key, Color fallback)
@@ -137,10 +115,5 @@ internal sealed class PreviewStyle
         return Color.FromArgb(Channel(color.R), Channel(color.G), Channel(color.B));
     }
 
-    private readonly record struct Stroke(Color Color, DashStyle Dash, int Width, bool Double);
-}
-
-internal readonly record struct PreviewBorder(Rectangle Bounds, PreviewStyle Style, BorderSides Sides, PreviewStyle? Anchor = null)
-{
-    internal void Draw(Graphics graphics, Pen pen) => Style.DrawBorders(graphics, pen, Bounds, Sides, Anchor);
+    internal readonly record struct Stroke(Color Color, DashStyle Dash, int Width, bool Double, int Priority);
 }

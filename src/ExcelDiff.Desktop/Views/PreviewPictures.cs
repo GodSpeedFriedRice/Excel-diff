@@ -20,25 +20,42 @@ internal sealed class PreviewPictures
     private static readonly Dictionary<PictureAsset, CacheEntry> Cache = [];
     private static long cacheBytes;
     private static long currentAccess;
-    private readonly Placement[] pictures;
+    private readonly Placement[] drawings;
+    private readonly double zoom;
 
     internal PreviewPictures(Sheet sheet, PreviewAxis rows, PreviewAxis columns, double zoom)
     {
+        this.zoom = zoom;
         var right = columns.Position(columns.Limit + 1);
         var bottom = rows.Position(rows.Limit + 1);
-        pictures = sheet.Pictures.Select(picture =>
-        {
-            var left = X(picture.From);
-            var top = Y(picture.From);
-            var endX = picture.To is { } end ? X(end) : left + Pixels(picture.Width);
-            var endY = picture.To is { } finish ? Y(finish) : top + Pixels(picture.Height);
-            return new Placement(left, top, endX, endY, picture.Asset);
-        }).Where(picture => picture.Right > Math.Max(0, picture.Left) && picture.Bottom > Math.Max(0, picture.Top) &&
-            picture.Left < right && picture.Top < bottom).ToArray();
-        LastRow = pictures.Length == 0 ? 0 : rows.AtPixel(pictures.Max(p => p.Bottom) - 1);
-        LastColumn = pictures.Length == 0 ? 0 : columns.AtPixel(pictures.Max(p => p.Right) - 1);
+        drawings = sheet.Pictures.Select(picture => Place(picture.From, picture.To, picture.Width, picture.Height,
+                picture.Order, picture.Asset, null))
+            .Concat(sheet.Shapes.Select(shape => Place(shape.From, shape.To, shape.Width, shape.Height, shape.Order, null, shape)))
+            .Where(drawing => drawing.VisibleRight > 0 && drawing.VisibleBottom > 0 && drawing.VisibleLeft < right &&
+                drawing.VisibleTop < bottom && drawing.HasArea)
+            .OrderBy(drawing => drawing.Order).ToArray();
+        LastRow = drawings.Length == 0 ? 0 : rows.AtPixel(drawings.Max(drawing => drawing.VisibleBottom) - 1);
+        LastColumn = drawings.Length == 0 ? 0 : columns.AtPixel(drawings.Max(drawing => drawing.VisibleRight) - 1);
 
-        long Pixels(long emu) => (long)Math.Round(emu / EmuPerPixel * zoom);
+        Placement Place(PictureMarker from, PictureMarker? to, long width, long height, int order, PictureAsset? asset, SheetShape? shape)
+        {
+            var left = X(from);
+            var top = Y(from);
+            var endX = to is { } end ? X(end) : left + Pixels(width);
+            var endY = to is { } finish ? Y(finish) : top + Pixels(height);
+            if (shape is null) return new(left, top, endX, endY, left, top, endX, endY, order, asset, null);
+            var w = Math.Max(0, endX - left);
+            var h = Math.Max(0, endY - top);
+            var rotation = shape.Rotation * Math.PI / 180;
+            var cos = Math.Abs(Math.Cos(rotation));
+            var sin = Math.Abs(Math.Sin(rotation));
+            var margin = Math.Clamp(Pixels(shape.Outline.Width), 2, 64) * 3;
+            var dx = (long)Math.Ceiling((w * cos + h * sin - w) / 2) + margin;
+            var dy = (long)Math.Ceiling((w * sin + h * cos - h) / 2) + margin;
+            return new(left, top, left + w, top + h, left - dx, top - dy, left + w + dx, top + h + dy, order, null, shape);
+        }
+
+        long Pixels(long emu) => (long)Math.Round(Math.Clamp(emu / EmuPerPixel * zoom, -int.MaxValue, int.MaxValue));
         long X(PictureMarker marker) => columns.Position(marker.Column) + Pixels(marker.OffsetX);
         long Y(PictureMarker marker) => rows.Position(marker.Row) + Pixels(marker.OffsetY);
     }
@@ -48,12 +65,17 @@ internal sealed class PreviewPictures
 
     internal void Draw(Graphics graphics, long x, long y, int size)
     {
-        foreach (var picture in pictures)
+        foreach (var picture in drawings)
         {
-            if (picture.Right <= x || picture.Bottom <= y || picture.Left >= x + size || picture.Top >= y + size)
+            if (picture.VisibleRight <= x || picture.VisibleBottom <= y || picture.VisibleLeft >= x + size || picture.VisibleTop >= y + size)
                 continue;
 
             var bounds = RectangleF.FromLTRB(picture.Left - x, picture.Top - y, picture.Right - x, picture.Bottom - y);
+            if (picture.Shape is { } shape)
+            {
+                PreviewShapes.Draw(graphics, bounds, shape, zoom);
+                continue;
+            }
             if (picture.Asset is not { } asset || !TryDraw(graphics, bounds, asset))
             {
                 using var pen = new Pen(Color.FromArgb(109, 124, 138)) { DashStyle = DashStyle.Dash };
@@ -166,5 +188,11 @@ internal sealed class PreviewPictures
         internal long Bytes { get; } = bitmap is null ? 0 : (long)bitmap.Width * bitmap.Height * 4;
     }
 
-    private readonly record struct Placement(long Left, long Top, long Right, long Bottom, PictureAsset? Asset);
+    private readonly record struct Placement(long Left, long Top, long Right, long Bottom,
+        long VisibleLeft, long VisibleTop, long VisibleRight, long VisibleBottom, int Order, PictureAsset? Asset, SheetShape? Shape)
+    {
+        internal bool HasArea => Right > Left && Bottom > Top ||
+            (Right > Left || Bottom > Top) &&
+            Shape?.Geometry is "line" or "lineInv" or "straightConnector1" or "bentConnector2" or "bentConnector3";
+    }
 }
