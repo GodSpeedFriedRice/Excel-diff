@@ -5,6 +5,7 @@ namespace ExcelDiff.Desktop.Views;
 internal sealed class MergeBookView : UserControl
 {
     private readonly DataGridView grid = new();
+    private readonly GridSort sort;
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
     private readonly TabPage cellTab = new("差分・競合");
     private readonly TabPage previewTab = new("全体プレビュー");
@@ -19,7 +20,7 @@ internal sealed class MergeBookView : UserControl
     private readonly Button useProduction;
     private readonly Button useIncoming;
     private readonly Button reveal;
-    private readonly MergeCellChange[] rows;
+    private MergeCellChange[] rows;
     private readonly IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices;
     private readonly int conflicts;
     private readonly string notes;
@@ -51,8 +52,8 @@ internal sealed class MergeBookView : UserControl
         foreach (var (title, weight) in new[] { ("シート", 15), ("セル", 7), ("共通ベース", 18),
                      ("本番版", 18), ("取り込み元", 18), ("処理", 24) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight,
-                MinimumWidth = weight == 7 ? 46 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-                SortMode = DataGridViewColumnSortMode.NotSortable });
+                MinimumWidth = weight == 7 ? 46 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        sort = new GridSort(grid, SortChanges);
         grid.CellValueNeeded += (_, e) =>
         {
             if (e.RowIndex < 0 || e.RowIndex >= rows.Length) return;
@@ -60,7 +61,7 @@ internal sealed class MergeBookView : UserControl
             e.Value = e.ColumnIndex switch
             {
                 0 => change.Cell.Sheet, 1 => change.Cell.Address, 2 => change.Base, 3 => change.Production, 4 => change.Incoming,
-                _ => Decision(change)
+                _ => DecisionText(Decision(change))
             };
         };
         grid.CellDoubleClick += (_, e) =>
@@ -135,7 +136,30 @@ internal sealed class MergeBookView : UserControl
     {
         if (locked || Current is not { Disposition: MergeDisposition.Conflict } change) return;
         Owner.Choose(Book, change.Cell, choice);
-        grid.InvalidateCell(5, grid.CurrentCell!.RowIndex);
+        if (sort.Column == 5) SortChanges();
+        else
+        {
+            grid.InvalidateCell(5, grid.CurrentCell!.RowIndex);
+            UpdateActions();
+        }
+    }
+
+    private void SortChanges()
+    {
+        var selected = Current;
+        var column = grid.CurrentCell?.ColumnIndex ?? 0;
+        var text = StringComparer.CurrentCultureIgnoreCase;
+        rows = (sort.Column switch
+        {
+            0 => sort.Order(rows, row => row.Cell.Sheet, text),
+            1 => sort.Order(rows, row => (row.Cell.Row, row.Cell.Column)),
+            2 => sort.Order(rows, row => row.Base, text),
+            3 => sort.Order(rows, row => row.Production, text),
+            4 => sort.Order(rows, row => row.Incoming, text),
+            _ => sort.Order(rows, Decision)
+        }).ToArray();
+        if (selected is not null) grid.CurrentCell = grid[column, Array.IndexOf(rows, selected)];
+        grid.Invalidate();
         UpdateActions();
     }
 
@@ -151,13 +175,26 @@ internal sealed class MergeBookView : UserControl
         details.Visible = details.Text.Length > 0;
     }
 
-    private string Decision(MergeCellChange change) => change.Disposition switch
+    private enum DecisionState { Unresolved, Unsupported, TakeIncoming, AdoptedProduction, AdoptedIncoming, KeepProduction, AlreadyMatches }
+
+    private DecisionState Decision(MergeCellChange change) => change.Disposition switch
     {
-        MergeDisposition.KeepProduction => "本番版を保持",
-        MergeDisposition.TakeIncoming => "自動取り込み",
-        MergeDisposition.AlreadyMatches => "両側で同じ変更",
-        MergeDisposition.Unsupported => "対象外（本番版を保持）",
-        _ => !choices.TryGetValue(change.Cell, out var choice) ? "競合・未選択" :
-            choice == MergeChoice.Incoming ? "取り込み元を採用" : "本番版を採用"
+        MergeDisposition.KeepProduction => DecisionState.KeepProduction,
+        MergeDisposition.TakeIncoming => DecisionState.TakeIncoming,
+        MergeDisposition.AlreadyMatches => DecisionState.AlreadyMatches,
+        MergeDisposition.Unsupported => DecisionState.Unsupported,
+        _ => !choices.TryGetValue(change.Cell, out var choice) ? DecisionState.Unresolved :
+            choice == MergeChoice.Incoming ? DecisionState.AdoptedIncoming : DecisionState.AdoptedProduction
+    };
+
+    private static string DecisionText(DecisionState state) => state switch
+    {
+        DecisionState.KeepProduction => "本番版を保持",
+        DecisionState.TakeIncoming => "自動取り込み",
+        DecisionState.AlreadyMatches => "両側で同じ変更",
+        DecisionState.Unsupported => "対象外（本番版を保持）",
+        DecisionState.AdoptedIncoming => "取り込み元を採用",
+        DecisionState.AdoptedProduction => "本番版を採用",
+        _ => "競合・未選択"
     };
 }

@@ -5,6 +5,7 @@ namespace ExcelDiff.Desktop.Views;
 internal sealed class PackageDiffView : UserControl
 {
     private readonly DataGridView parts = Appearance.Grid();
+    private readonly GridSort sort;
     private readonly XmlDiffView xml = new();
     private readonly ThreeWayXmlView? tripleXml;
     private readonly Label summary = Appearance.Label("");
@@ -19,6 +20,7 @@ internal sealed class PackageDiffView : UserControl
     private readonly bool threeWay;
     private IReadOnlyList<PackagePartDifference> pairs = [];
     private IReadOnlyList<PackagePartMergeDifference> triples = [];
+    private int[] partOrder = [];
     private CancellationTokenSource? pending;
     private string[] paths = [];
     private bool loaded;
@@ -57,10 +59,11 @@ internal sealed class PackageDiffView : UserControl
         }
         AddColumn("比較結果", 27);
         AddColumn("形式", 12);
-        parts.CellValueNeeded += (_, e) => e.Value = PartValue(e.RowIndex, e.ColumnIndex);
+        sort = new GridSort(parts, SortParts);
+        parts.CellValueNeeded += (_, e) => e.Value = PartValue(PartIndex(e.RowIndex), e.ColumnIndex);
         parts.CellToolTipTextNeeded += (_, e) =>
         {
-            if (e.RowIndex >= 0 && e.ColumnIndex == 0) e.ToolTipText = PartValue(e.RowIndex, 0);
+            if (e.RowIndex >= 0 && e.ColumnIndex == 0) e.ToolTipText = PartValue(PartIndex(e.RowIndex), 0);
         };
         parts.CurrentCellChanged += (_, _) => ShowPart();
 
@@ -102,7 +105,7 @@ internal sealed class PackageDiffView : UserControl
         parts.Columns.Add(new DataGridViewTextBoxColumn
         {
             HeaderText = title, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = width, SortMode = DataGridViewColumnSortMode.NotSortable
+            FillWeight = width
         });
     }
 
@@ -140,6 +143,7 @@ internal sealed class PackageDiffView : UserControl
     {
         updating = true;
         parts.RowCount = 0;
+        partOrder = SortOrderOf(count);
         parts.RowCount = count;
         if (count > 0) parts.CurrentCell = parts.Rows[0].Cells[0];
         summary.Text = message;
@@ -152,6 +156,33 @@ internal sealed class PackageDiffView : UserControl
             details.Clear();
         }
         else ShowPart();
+    }
+
+    private int PartIndex(int row) => row >= 0 && row < partOrder.Length ? partOrder[row] : -1;
+
+    private void SortParts()
+    {
+        var current = PartIndex(parts.CurrentCell?.RowIndex ?? -1);
+        var column = parts.CurrentCell?.ColumnIndex ?? 0;
+        partOrder = SortOrderOf(partOrder.Length);
+        updating = true;
+        if (current >= 0) parts.CurrentCell = parts[column, Array.IndexOf(partOrder, current)];
+        updating = false;
+        parts.Invalidate();
+    }
+
+    private int[] SortOrderOf(int count)
+    {
+        var order = Enumerable.Range(0, count);
+        return (sort.Column switch
+        {
+            < 0 => order,
+            1 when threeWay => sort.Order(order, index => triples[index].ProductionChange),
+            2 when threeWay => sort.Order(order, index => triples[index].IncomingChange),
+            3 when threeWay => sort.Order(order, index => (int)PackagePartMergeStatus.BothChanged - (int)triples[index].Status),
+            1 => sort.Order(order, index => pairs[index].Kind),
+            _ => sort.Order(order, index => PartValue(index, sort.Column), StringComparer.CurrentCultureIgnoreCase)
+        }).ToArray();
     }
 
     private string? PartValue(int index, int column)
@@ -193,10 +224,11 @@ internal sealed class PackageDiffView : UserControl
             tripleXml.Visible = false;
         }
         details.Clear();
-        if (parts.CurrentRow is not { } row) return;
-        if (threeWay && row.Index < triples.Count)
+        var index = PartIndex(parts.CurrentCell?.RowIndex ?? -1);
+        if (index < 0) return;
+        if (threeWay && index < triples.Count)
         {
-            var item = triples[row.Index];
+            var item = triples[index];
             details.Lines = [Describe("共通ベース", item.Base), Describe("本番版", item.Production), Describe("取り込み元", item.Incoming)];
             if (showThreeWay && tripleXml is not null)
             {
@@ -215,9 +247,9 @@ internal sealed class PackageDiffView : UserControl
             };
             ShowXml(paths[left], leftPart, paths[right], rightPart);
         }
-        else if (!threeWay && row.Index < pairs.Count)
+        else if (!threeWay && index < pairs.Count)
         {
-            var item = pairs[row.Index];
+            var item = pairs[index];
             details.Lines = [Describe("変更前", item.Before), Describe("変更後", item.After)];
             ShowXml(beforePath!, item.Before, afterPath!, item.After);
         }

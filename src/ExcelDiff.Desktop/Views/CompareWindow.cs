@@ -30,8 +30,7 @@ internal sealed class CompareWindow : Form
     private TabPage? targetTab;
     private IReadOnlyList<FilePair> results = [];
     private PreviewOptions previewOptions;
-    private int sortColumn = -1;
-    private SortOrder sortOrder = SortOrder.None;
+    private readonly GridSort fileSort;
     private int visibleFileCount;
     private bool busy;
 
@@ -52,7 +51,7 @@ internal sealed class CompareWindow : Form
         var layout = Appearance.Stack();
         var menu = new MenuStrip { Dock = DockStyle.Fill, BackColor = Color.White };
         var file = new ToolStripMenuItem("ファイル");
-        file.DropDownItems.Add(new ToolStripMenuItem("開く…", null, (_, _) => Choose()) { ShortcutKeys = Keys.Control | Keys.O });
+        file.DropDownItems.Add(new ToolStripMenuItem("比較…", null, (_, _) => Choose()) { ShortcutKeys = Keys.Control | Keys.O });
         file.DropDownItems.Add(new ToolStripMenuItem("3方向マージ…", null, (_, _) => OpenMerge()));
         file.DropDownItems.Add(new ToolStripMenuItem("タブを閉じる", null, (_, _) => CloseTab(tabs.SelectedTab))
         {
@@ -73,7 +72,7 @@ internal sealed class CompareWindow : Form
         Appearance.Row(layout, menu);
 
         var toolbar = Appearance.Toolbar();
-        toolbar.Controls.Add(Appearance.Button("開く…", Choose, primary: true));
+        toolbar.Controls.Add(Appearance.Button("比較…", Choose, primary: true));
         toolbar.Controls.Add(Appearance.Button("再比較", async () => await Recompare()));
         toolbar.Controls.Add(Appearance.Button("↑ 前の差分", () => MoveFile(-1)));
         toolbar.Controls.Add(Appearance.Button("↓ 次の差分", () => MoveFile(1)));
@@ -130,13 +129,10 @@ internal sealed class CompareWindow : Form
             ("左更新日時", 17), ("右更新日時", 17), ("拡張子", 9) })
         {
             fileList.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = name, FillWeight = weight,
-                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, SortMode = DataGridViewColumnSortMode.Programmatic });
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
         }
         fileList.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        fileList.ColumnHeaderMouseClick += (_, e) =>
-        {
-            if (e.Button == MouseButtons.Left && e.ColumnIndex >= 0) SortFiles(e.ColumnIndex);
-        };
+        fileSort = new GridSort(fileList, RenderFiles);
         fileList.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await OpenSelected(); };
         fileList.KeyDown += async (_, e) =>
         {
@@ -389,31 +385,19 @@ internal sealed class CompareWindow : Form
 
     private sealed record FolderRow(FilePair Pair, SheetSummary? Sheet = null);
 
-    private void SortFiles(int column)
-    {
-        if (sortColumn >= 0) fileList.Columns[sortColumn].HeaderCell.SortGlyphDirection = SortOrder.None;
-        sortOrder = sortColumn == column && sortOrder == SortOrder.Ascending ? SortOrder.Descending : SortOrder.Ascending;
-        sortColumn = column;
-        fileList.Columns[column].HeaderCell.SortGlyphDirection = sortOrder;
-        RenderFiles();
-    }
-
     private IEnumerable<FilePair> VisibleFiles(string query)
     {
         var pairs = results.Where(pair => (showSame.Checked || pair.Status != FileStatus.Same) &&
             pair.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase));
         var comparer = StringComparer.CurrentCultureIgnoreCase;
-        IOrderedEnumerable<FilePair> Order<TKey>(Func<FilePair, TKey> key, IComparer<TKey>? order = null) =>
-            sortOrder == SortOrder.Descending ? pairs.OrderByDescending(key, order) : pairs.OrderBy(key, order);
-
-        return sortColumn switch
+        return fileSort.Column switch
         {
-            0 => Order(pair => Path.GetFileName(pair.RelativePath), comparer),
-            1 => Order(pair => Path.GetDirectoryName(pair.RelativePath), comparer),
-            2 => Order(pair => StatusName(pair.Status), comparer),
-            3 => Order(pair => pair.Left?.LastWriteTimeUtc),
-            4 => Order(pair => pair.Right?.LastWriteTimeUtc),
-            5 => Order(pair => Path.GetExtension(pair.RelativePath), comparer),
+            0 => fileSort.Order(pairs, pair => Path.GetFileName(pair.RelativePath), comparer),
+            1 => fileSort.Order(pairs, pair => Path.GetDirectoryName(pair.RelativePath), comparer),
+            2 => fileSort.Order(pairs, pair => (StatusPriority(pair.Status), pair.PackageOnly)),
+            3 => fileSort.Order(pairs, pair => pair.Left?.LastWriteTimeUtc),
+            4 => fileSort.Order(pairs, pair => pair.Right?.LastWriteTimeUtc),
+            5 => fileSort.Order(pairs, pair => Path.GetExtension(pair.RelativePath), comparer),
             _ => pairs
         };
     }
@@ -430,7 +414,7 @@ internal sealed class CompareWindow : Form
         {
             visibleFileCount++;
             var folder = Path.GetDirectoryName(pair.RelativePath);
-            if (sortColumn is -1 or 1 && !string.IsNullOrEmpty(folder) && folder != lastFolder)
+            if (fileSort.Column is -1 or 1 && !string.IsNullOrEmpty(folder) && folder != lastFolder)
             {
                 var header = fileList.Rows[fileList.Rows.Add(folder)];
                 header.DefaultCellStyle.BackColor = Appearance.Panel;
@@ -451,7 +435,13 @@ internal sealed class CompareWindow : Form
             if (sameFile) selection = row.Cells[0];
             if (!showSheets.Checked) continue;
 
-            foreach (var sheet in pair.Sheets)
+            var sheets = fileSort.Column switch
+            {
+                0 => fileSort.Order(pair.Sheets, sheet => sheet.Name, StringComparer.CurrentCultureIgnoreCase),
+                2 => fileSort.Order(pair.Sheets, sheet => (StatusPriority(sheet.Status), -sheet.DifferenceCount)),
+                _ => pair.Sheets.AsEnumerable()
+            };
+            foreach (var sheet in sheets)
             {
                 var summary = sheet.Status == FileStatus.Different
                     ? $"差分あり ({sheet.DifferenceCount} 件)"
@@ -478,6 +468,12 @@ internal sealed class CompareWindow : Form
     {
         FileStatus.Different => "差分あり", FileStatus.Same => "同一", FileStatus.LeftOnly => "左のみに存在",
         FileStatus.RightOnly => "右のみに存在", _ => "比較できません"
+    };
+
+    private static int StatusPriority(FileStatus state) => state switch
+    {
+        FileStatus.Unreadable => 0, FileStatus.Different => 1, FileStatus.LeftOnly => 2,
+        FileStatus.RightOnly => 3, _ => 4
     };
 
     private void MoveFile(int direction)
@@ -584,7 +580,7 @@ internal sealed class CompareWindow : Form
         if (!folder)
         {
             status.Text = tabs.SelectedTab?.Tag is WorkbookView workbook ? workbook.Status :
-                tabs.SelectedTab is null ? "「開く…」から比較対象を選択できます。" : "";
+                tabs.SelectedTab is null ? "「比較…」から比較対象を選択できます。" : "";
             return;
         }
         var counts = results.ToLookup(r => r.Status);

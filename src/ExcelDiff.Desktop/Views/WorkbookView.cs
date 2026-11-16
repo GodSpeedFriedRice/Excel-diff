@@ -14,6 +14,7 @@ internal sealed class WorkbookView : UserControl
     private readonly Label position = Appearance.Label("");
     private readonly Label warning = Appearance.Label("");
     private readonly DifferenceGrid differences = Appearance.ConfigureGrid(new DifferenceGrid());
+    private readonly GridSort differenceSort;
     private readonly WheelZoom listZoom = new();
     private readonly WheelZoom fullZoom = new();
     private readonly Label zoomIndicator = Appearance.Label("100%");
@@ -43,6 +44,7 @@ internal sealed class WorkbookView : UserControl
     private readonly TableLayoutPanel previews;
 
     private int differenceIndex = -1;
+    private int[] differenceOrder = [];
     private bool updating;
     private bool comparing;
 
@@ -85,9 +87,10 @@ internal sealed class WorkbookView : UserControl
             differences.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = title, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-                FillWeight = width, SortMode = DataGridViewColumnSortMode.NotSortable
+                FillWeight = width
             });
         }
+        differenceSort = new GridSort(differences, SortDifferences);
         differences.RowHeightInfoNeeded += (_, e) => e.Height = (int)Math.Round(28 * listZoom.Scale);
         differences.ZoomRequested += ZoomList;
         differences.CellValueNeeded += FillDifference;
@@ -301,7 +304,8 @@ internal sealed class WorkbookView : UserControl
     {
         warning.Text = Current?.KeyWarning ?? "";
         updating = true;
-        differences.RowCount = Current?.Differences.Count ?? 0;
+        differenceOrder = OrderedDifferences();
+        differences.RowCount = differenceOrder.Length;
         differenceIndex = differences.RowCount > 0 && views.SelectedTab == list ? 0 : -1;
         if (differences.RowCount > 0)
         {
@@ -318,10 +322,46 @@ internal sealed class WorkbookView : UserControl
     private static string DescribeLocation(Difference diff) => diff.LeftAddress == diff.RightAddress
         ? diff.LeftAddress : $"{diff.LeftAddress} → {diff.RightAddress}";
 
+    private int[] OrderedDifferences()
+    {
+        if (Current is not { } sheet) return [];
+        var items = sheet.Differences;
+        var indices = Enumerable.Range(0, items.Count);
+        var text = StringComparer.CurrentCultureIgnoreCase;
+        return (differenceSort.Column switch
+        {
+            0 => differenceSort.Order(indices, index =>
+            {
+                var diff = items[index];
+                return (diff.LeftRow ?? diff.RightRow ?? 0, diff.Column ?? 0);
+            }),
+            1 => differenceSort.Order(indices, index => items[index].Item, text),
+            2 => differenceSort.Order(indices, index => items[index].Left, text),
+            3 => differenceSort.Order(indices, index => items[index].Right, text),
+            _ => indices
+        }).ToArray();
+    }
+
+    private void SortDifferences()
+    {
+        var selected = DifferenceAt(differenceIndex);
+        var column = differences.CurrentCell?.ColumnIndex ?? 0;
+        differenceOrder = OrderedDifferences();
+        differenceIndex = selected < 0 ? -1 : Array.IndexOf(differenceOrder, selected);
+        updating = true;
+        if (differenceIndex >= 0) differences.CurrentCell = differences[column, differenceIndex];
+        updating = false;
+        differences.Invalidate();
+        UpdateSelection();
+    }
+
+    private int DifferenceAt(int row) => row >= 0 && row < differenceOrder.Length ? differenceOrder[row] : -1;
+
     private void FillDifference(object? sender, DataGridViewCellValueEventArgs e)
     {
-        if (Current is not SheetDiff sheet || e.RowIndex < 0 || e.RowIndex >= sheet.Differences.Count) return;
-        var diff = sheet.Differences[e.RowIndex];
+        var index = DifferenceAt(e.RowIndex);
+        if (Current is not SheetDiff sheet || index < 0) return;
+        var diff = sheet.Differences[index];
         e.Value = e.ColumnIndex switch
         {
             0 => DescribeLocation(diff),
@@ -347,7 +387,8 @@ internal sealed class WorkbookView : UserControl
         var details = nearby ? detail : fullDetails;
         if (pick.DifferenceIndices.Count > 0)
         {
-            SelectDifference(pick.DifferenceIndices[0]);
+            var displayIndex = Array.IndexOf(differenceOrder, pick.DifferenceIndices[0]);
+            if (displayIndex >= 0) SelectDifference(displayIndex);
             details.Text = string.Join(Environment.NewLine + Environment.NewLine,
                 pick.DifferenceIndices.Select(index => DescribeDifference(sheet.Differences[index])));
             return;
@@ -376,7 +417,8 @@ internal sealed class WorkbookView : UserControl
 
         var index = differenceIndex;
         var count = sheet?.Differences.Count ?? 0;
-        var diff = index >= 0 && index < count ? sheet!.Differences[index] : null;
+        var originalIndex = DifferenceAt(index);
+        var diff = sheet is not null && originalIndex >= 0 ? sheet.Differences[originalIndex] : null;
         position.Text = $"{(diff is null ? 0 : index + 1)} / {count}";
         detail.Text = diff is not null ? DescribeDifference(diff) : sheet is null
             ? "比較できるシートがありません。" : count == 0 ? "比較対象の項目に差分はありません。" :
