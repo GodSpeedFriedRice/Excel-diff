@@ -65,6 +65,8 @@ internal sealed class CompareWindow : Form
         var settings = new ToolStripMenuItem("設定");
         AddPreviewOption("改ページプレビュー", previewOptions.ShowPageBreaks,
             (current, enabled) => current with { ShowPageBreaks = enabled }, view);
+        AddPreviewOption("差分の強調表示", previewOptions.ShowDifferenceHighlights,
+            (current, enabled) => current with { ShowDifferenceHighlights = enabled }, view);
         AddPreviewOption("周辺を表示", previewOptions.ShowNearby, (current, enabled) => current with { ShowNearby = enabled });
         AddPreviewOption("保存倍率を使う", previewOptions.UseSavedZoom, (current, enabled) => current with { UseSavedZoom = enabled });
         AddPreviewOption("グリッド線を表示", previewOptions.ShowGridlines, (current, enabled) => current with { ShowGridlines = enabled });

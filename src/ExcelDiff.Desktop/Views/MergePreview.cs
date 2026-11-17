@@ -127,6 +127,8 @@ internal sealed class MergePreview : UserControl
 
     internal void SetOptions(PreviewOptions next)
     {
+        if (options.ShowDifferenceHighlights != next.ShowDifferenceHighlights)
+            foreach (var pane in panes) pane.SetDifferenceHighlights(next.ShowDifferenceHighlights);
         var redraw = options.UseSavedZoom != next.UseSavedZoom || options.ShowGridlines != next.ShowGridlines;
         if (options.ShowPageBreaks != next.ShowPageBreaks)
             foreach (var pane in panes) pane.SetPageBreakPreview(next.ShowPageBreaks);

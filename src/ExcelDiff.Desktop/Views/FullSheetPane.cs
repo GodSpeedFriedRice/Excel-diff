@@ -9,6 +9,9 @@ namespace ExcelDiff.Desktop.Views;
 internal sealed class FullSheetPane : UserControl
 {
     private const double OverviewThreshold = .25;
+    private readonly TextureBrush changedHatch = CreateHatch(Color.FromArgb(205, 128, 0));
+    private readonly TextureBrush addedHatch = CreateHatch(Color.FromArgb(33, 150, 76));
+    private readonly TextureBrush removedHatch = CreateHatch(Color.FromArgb(210, 49, 71));
     private readonly Surface surface;
     private IReadOnlyList<Difference>? indexedDifferences;
     private PreviewChanges? marks;
@@ -23,6 +26,7 @@ internal sealed class FullSheetPane : UserControl
     private Sheet? source;
     private bool savedZoom;
     private bool showGridlines = true;
+    private bool showDifferenceHighlights = true;
     private bool pageBreakPreview;
     private double scale = 1;
     private bool date1904;
@@ -82,6 +86,13 @@ internal sealed class FullSheetPane : UserControl
         showGridlines = visible;
         if (source is null) return;
         ResetSession();
+    }
+
+    internal void SetDifferenceHighlights(bool visible)
+    {
+        if (showDifferenceHighlights == visible) return;
+        showDifferenceHighlights = visible;
+        surface.Invalidate();
     }
 
     internal void SetPageBreakPreview(bool enabled)
@@ -420,14 +431,16 @@ internal sealed class FullSheetPane : UserControl
         if (active.Raster.PrintLayout is { } print && visibleRows.Length > 0 && visibleColumns.Length > 0)
             print.Draw(graphics, body, Font, number => ColumnOffset(active.Raster, number), number => RowOffset(active.Raster, number),
                 visibleRows[0], visibleRows[^1], visibleColumns[0], visibleColumns[^1]);
-        DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, outline);
+        if (showDifferenceHighlights)
+            DrawBodyChanges(graphics, active.Raster, body, visibleRows, visibleColumns, outline);
         DrawSelection(graphics, active.Raster, body);
         graphics.Restore(state);
 
         using var headers = new SolidBrush(Appearance.Panel);
         graphics.FillRectangle(headers, 0, 0, surface.Width, HeaderHeight);
         graphics.FillRectangle(headers, 0, HeaderHeight, HeaderWidth, surface.Height);
-        DrawHeaderChanges(graphics, active.Raster, body, visibleRows, visibleColumns, tint, outline);
+        if (showDifferenceHighlights)
+            DrawHeaderChanges(graphics, active.Raster, body, visibleRows, visibleColumns, tint, outline);
         var nextColumnLabel = HeaderWidth;
         foreach (var number in visibleColumns)
         {
@@ -543,8 +556,28 @@ internal sealed class FullSheetPane : UserControl
             tint.Color = Color.FromArgb(48, border);
             graphics.FillRectangle(tint, visible);
         }
+        else
+        {
+            var hatch = color == Appearance.Added ? addedHatch : color == Appearance.Removed ? removedHatch : changedHatch;
+            graphics.FillRectangle(hatch, visible);
+        }
         outline.Color = border;
         graphics.DrawRectangle(outline, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+    }
+
+    private static TextureBrush CreateHatch(Color color)
+    {
+        const int spacing = 12;
+        using var tile = new Bitmap(spacing, spacing, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(tile))
+        using (var pen = new Pen(Color.FromArgb(88, color)))
+        {
+            graphics.Clear(Color.Transparent);
+            // Keep the pattern in screen pixels so shrinking cells does not crowd the lines.
+            for (var offset = -spacing; offset <= spacing; offset += spacing)
+                graphics.DrawLine(pen, offset, spacing, offset + spacing, 0);
+        }
+        return new TextureBrush(tile, WrapMode.Tile);
     }
 
     private void DrawSelection(Graphics graphics, SheetRaster raster, Rectangle body)
@@ -564,7 +597,7 @@ internal sealed class FullSheetPane : UserControl
             bottom = Math.Max(bottom, top + 2);
         }
         if (right <= left || bottom <= top) return;
-        using var pen = new Pen(Color.FromArgb(20, 111, 220), 2) { Alignment = PenAlignment.Inset };
+        using var pen = new Pen(Color.FromArgb(20, 111, 220), 3) { Alignment = PenAlignment.Inset };
         graphics.DrawRectangle(pen, left, top, right - left - 1, bottom - top - 1);
     }
 
@@ -587,7 +620,13 @@ internal sealed class FullSheetPane : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) ReleaseSession();
+        if (disposing)
+        {
+            ReleaseSession();
+            changedHatch.Dispose();
+            addedHatch.Dispose();
+            removedHatch.Dispose();
+        }
         base.Dispose(disposing);
     }
 

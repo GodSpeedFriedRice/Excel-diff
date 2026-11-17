@@ -175,6 +175,13 @@ internal sealed class WorkbookView : UserControl
         var previous = previewOptions;
         if (options == previous) return;
         previewOptions = options;
+        if (options.ShowDifferenceHighlights != previous.ShowDifferenceHighlights)
+        {
+            leftPreview.SetDifferenceHighlights(options.ShowDifferenceHighlights);
+            rightPreview.SetDifferenceHighlights(options.ShowDifferenceHighlights);
+            leftFull.SetDifferenceHighlights(options.ShowDifferenceHighlights);
+            rightFull.SetDifferenceHighlights(options.ShowDifferenceHighlights);
+        }
         if (options.ShowGridlines != previous.ShowGridlines)
         {
             leftPreview.SetGridlines(options.ShowGridlines);
