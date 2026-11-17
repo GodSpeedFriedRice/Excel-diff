@@ -21,9 +21,12 @@ internal sealed class MergeBookView : UserControl
     private readonly Button useProduction;
     private readonly Button useIncoming;
     private readonly Button reveal;
+    private readonly Button nextUnresolved;
     private MergeCellChange[] rows;
     private readonly IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices;
-    private readonly int conflicts;
+    private readonly Dictionary<MergeCellAddress, MergeCellChange> conflictsByCell;
+    private readonly MergeCellChange[] conflicts;
+    private MergeCellChange? previewConflict;
     private readonly string notes;
     private bool locked;
 
@@ -35,7 +38,8 @@ internal sealed class MergeBookView : UserControl
         this.choices = choices;
         Dock = DockStyle.Fill;
         rows = book.Plan?.Changes.OrderByDescending(change => change.Disposition == MergeDisposition.Conflict).ToArray() ?? [];
-        conflicts = rows.Count(row => row.Disposition == MergeDisposition.Conflict);
+        conflicts = rows.Where(row => row.Disposition == MergeDisposition.Conflict).ToArray();
+        conflictsByCell = conflicts.ToDictionary(change => change.Cell);
         notes = book.Notice ?? string.Join(Environment.NewLine,
             book.Plan?.Notices.Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
         preview = new MergePreview(book, owner.UsesBase);
@@ -44,7 +48,14 @@ internal sealed class MergeBookView : UserControl
         useProduction = Appearance.Button("取り込み1を採用", () => Choose(MergeChoice.Production));
         useIncoming = Appearance.Button("取り込み2を採用", () => Choose(MergeChoice.Incoming));
         reveal = Appearance.Button("プレビューで表示", () => OpenPreview(Current));
-        actions.Controls.AddRange([useProduction, useIncoming, reveal, status]);
+        nextUnresolved = Appearance.Button("次の未解決へ", MoveToUnresolved);
+        actions.Controls.AddRange([useProduction, useIncoming, reveal, nextUnresolved, status]);
+        preview.CellSelected += cell =>
+        {
+            previewConflict = cell is null ? null : conflictsByCell.GetValueOrDefault(cell);
+            if (previewConflict is { } change) preview.ShowConflictValues(change);
+            UpdateActions();
+        };
         Appearance.Row(layout, actions);
         Appearance.ConfigureGrid(grid);
         grid.VirtualMode = true;
@@ -124,6 +135,8 @@ internal sealed class MergeBookView : UserControl
     internal FolderMergeBook Book { get; }
     private MergeCellChange? Current => grid.CurrentCell is { RowIndex: var index } && index >= 0 && index < rows.Length
         ? rows[index] : null;
+    private MergeCellChange? ChoiceTarget => views.SelectedTab == previewTab ? previewConflict :
+        views.SelectedTab == cellTab ? Current : null;
 
     internal void SetPreviewOptions(PreviewOptions options)
     {
@@ -142,17 +155,31 @@ internal sealed class MergeBookView : UserControl
         if (change is not null) preview.Reveal(change.Cell);
         views.SelectedTab = previewTab;
         preview.LoadPreview();
+        UpdateActions();
     }
 
     private void Choose(MergeChoice choice)
     {
-        if (locked || Current is not { Disposition: MergeDisposition.Conflict } change) return;
+        if (locked || ChoiceTarget is not { Disposition: MergeDisposition.Conflict } change) return;
         Owner.Choose(Book, change.Cell, choice);
         if (sort.Column == 5) SortChanges();
         else
         {
-            grid.InvalidateRow(grid.CurrentCell!.RowIndex);
+            grid.Invalidate();
             UpdateActions();
+        }
+    }
+
+    private void MoveToUnresolved()
+    {
+        if (locked) return;
+        var current = Array.IndexOf(conflicts, previewConflict);
+        for (var offset = 1; offset <= conflicts.Length; offset++)
+        {
+            var change = conflicts[(current + offset) % conflicts.Length];
+            if (choices.ContainsKey(change.Cell)) continue;
+            preview.Reveal(change.Cell);
+            return;
         }
     }
 
@@ -177,10 +204,14 @@ internal sealed class MergeBookView : UserControl
 
     private void UpdateActions()
     {
-        useProduction.Enabled = useIncoming.Enabled = !locked && views.SelectedTab == cellTab &&
-            Current?.Disposition == MergeDisposition.Conflict;
-        reveal.Enabled = views.SelectedTab != previewTab;
-        status.Text = $"未解決のコンフリクト {conflicts - choices.Count} 件";
+        var inPreview = views.SelectedTab == previewTab;
+        var unresolved = conflicts.Length - choices.Count;
+        useProduction.Enabled = useIncoming.Enabled = !locked && ChoiceTarget?.Disposition == MergeDisposition.Conflict;
+        reveal.Visible = !inPreview;
+        nextUnresolved.Visible = inPreview;
+        nextUnresolved.Enabled = !locked && unresolved > 0;
+        var selected = inPreview && previewConflict is { } pick ? $"　{pick.Cell.Address}　{DecisionText(Decision(pick))}" : "";
+        status.Text = $"未解決のコンフリクト {unresolved} 件{selected}";
         var contents = Current is { } change ? change.Reason ??
             (Owner.UsesBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "") +
             $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";

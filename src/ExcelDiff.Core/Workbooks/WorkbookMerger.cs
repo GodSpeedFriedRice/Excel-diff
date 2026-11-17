@@ -34,12 +34,14 @@ public sealed class WorkbookMergePlan
         this.edits = edits.ToArray();
         Changes = Array.AsReadOnly(this.edits.Select(edit => edit.Change).ToArray());
         Notices = notices.AsReadOnly();
+        RequiresManualResolution = notices.Count > 0 || Changes.Any(change => change.Disposition == MergeDisposition.Unsupported);
         PartChanges = partChanges;
         PairParts = pairParts;
     }
 
     public IReadOnlyList<MergeCellChange> Changes { get; }
     public IReadOnlyList<MergeNotice> Notices { get; }
+    public bool RequiresManualResolution { get; }
     public IReadOnlyList<PackagePartMergeDifference> PartChanges { get; }
     public IReadOnlyList<PackagePartDifference> PairParts { get; }
 
@@ -59,6 +61,8 @@ public sealed class WorkbookMergePlan
         if (new[] { baseInput?.Path, productionInput.Path, incomingInput.Path }.Contains(output, StringComparer.OrdinalIgnoreCase))
             throw new IOException("入力ファイルとは別のファイル名を指定してください。");
         if (File.Exists(output)) throw new IOException("出力先に同名のファイルがあります。");
+        if (RequiresManualResolution)
+            throw new InvalidOperationException("手動で解消が必要な項目があります。Excel で修正してから再比較してください。");
         var writes = new List<Edit>();
         foreach (var edit in edits)
         {
@@ -154,7 +158,12 @@ public static partial class WorkbookMerger
         var notices = new List<MergeNotice>();
         var partChanges = hasBase ? PackageComparer.Compare(baselineBook.Parts!, productionParts, incomingParts, token) : [];
         var pairParts = hasBase ? [] : PackageComparer.Compare(productionParts, incomingParts, token);
-        WorkbookMergePlan Result() => new(baselineBook.Input, productionInput, incomingInput, edits, notices, partChanges, pairParts);
+        WorkbookMergePlan Result()
+        {
+            if (hasBase && notices.Count > 0 && partChanges.All(change => change.Status == PackagePartMergeStatus.SameChange))
+                notices.Clear();
+            return new(baselineBook.Input, productionInput, incomingInput, edits, notices, partChanges, pairParts);
+        }
         if (production.Date1904 != incoming.Date1904 ||
             (baselineBook.Book is { } baseBook && baseBook.Date1904 != production.Date1904))
         {
@@ -175,13 +184,13 @@ public static partial class WorkbookMerger
                 if (!hasBase || original is not null || (destination is null) != (source is null))
                     notices.Add(new(name, "シートの追加・削除・名前変更は手動で確認してください。"));
                 else
-                    notices.Add(new(name, "両側に同名のシートが追加されています。取り込み1を保持します。"));
+                    notices.Add(new(name, "両側に同名のシートが追加されています。手動で確認してください。"));
                 continue;
             }
             if (!destination.Merges.Ranges.SequenceEqual(source.Merges.Ranges) ||
                 (original is not null && !original.Merges.Ranges.SequenceEqual(destination.Merges.Ranges)))
             {
-                notices.Add(new(name, "結合範囲が変わったシートです。取り込み1を保持します。"));
+                notices.Add(new(name, "結合範囲が変わったシートです。手動で確認してください。"));
                 continue;
             }
 
@@ -191,7 +200,7 @@ public static partial class WorkbookMerger
             if (baseline is null ? current.HasMovedLines(other, token) :
                 baseline.HasMovedLines(current, token) || baseline.HasMovedLines(other, token))
             {
-                notices.Add(new(name, "行・列の移動を検出しました。取り込み1を保持します。"));
+                notices.Add(new(name, "行・列の移動を検出しました。手動で確認してください。"));
                 continue;
             }
 
@@ -222,7 +231,7 @@ public static partial class WorkbookMerger
                         (theirs.Key.Kind == "formula" && ExternalBookReference().IsMatch(theirs.Key.Text)))
                     {
                         disposition = MergeDisposition.Unsupported;
-                        reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。取り込み1を保持します。";
+                        reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。手動で解消してください。";
                     }
                     else disposition = hasBase && ours.Key == before.Key ? MergeDisposition.TakeIncoming : MergeDisposition.Conflict;
 
@@ -244,7 +253,7 @@ public static partial class WorkbookMerger
                         Change = edit.Change with
                         {
                             Disposition = MergeDisposition.Unsupported,
-                            Reason = "構造変更のあるブック内でシートを参照する数式です。取り込み1を保持します。"
+                            Reason = "構造変更のあるブック内でシートを参照する数式です。手動で解消してください。"
                         }
                     };
             }

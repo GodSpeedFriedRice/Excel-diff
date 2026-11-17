@@ -40,18 +40,33 @@ internal static class FolderMergeChecks
         check(firstCell == secondCell && firstCell.Address == "D2", "同一セル番地でも別ブックに独立した競合がある");
         check(plan.Books.Count(book => book.Plan is null && book.Notice is not null) == 3, "追加、欠落、解析不能を通知する");
 
+        var pairWithMissing = FolderMerger.AnalyzePair(production, incoming);
+        check(pairWithMissing.Books.Count == 5 && pairWithMissing.Books.All(book => book.BasePath is null) &&
+            pairWithMissing.Books.Single(book => book.RelativePath == "keep.xlsx").Notice?.Contains("共通ベース") == false,
+            "2方向のフォルダ比較で共通ベースの欠落を通知しない");
+
         var choices = new Dictionary<string, IReadOnlyDictionary<MergeCellAddress, MergeChoice>>
         {
             [first.RelativePath] = new Dictionary<MergeCellAddress, MergeChoice> { [firstCell] = MergeChoice.Production }
         };
         var destination = Path.Combine(scratch, "folder-output");
-        try
+        choices[second.RelativePath] = new Dictionary<MergeCellAddress, MergeChoice> { [secondCell] = MergeChoice.Incoming };
+        CheckBlocked("不足ファイルや解析不能なブックがあると、セルをすべて選んでも保存を拒否する");
+
+        File.Delete(Path.Combine(production, "keep.xlsx"));
+        File.Delete(Path.Combine(incoming, "new.xlsx"));
+        foreach (var folder in new[] { baseFolder, production, incoming }) File.Delete(Path.Combine(folder, "broken.xlsx"));
+        plan = FolderMerger.Analyze(baseFolder, production, incoming);
+        choices.Remove(second.RelativePath);
+        CheckBlocked("別ブックの未解決競合があると保存を拒否する");
+
+        void CheckBlocked(string description)
         {
-            plan.Save(destination, choices);
-            check(false, "別ブックの未解決競合があると保存を拒否する");
+            var rejected = false;
+            try { plan.Save(destination, choices); }
+            catch (InvalidOperationException) { rejected = true; }
+            check(rejected && !Directory.Exists(destination), description);
         }
-        catch (InvalidOperationException) { }
-        check(!Directory.Exists(destination), "保存が失敗しても途中までの出力を残さない");
 
         choices[second.RelativePath] = new Dictionary<MergeCellAddress, MergeChoice> { [secondCell] = MergeChoice.Incoming };
         plan.Save(destination, choices);
@@ -59,13 +74,7 @@ internal static class FolderMergeChecks
         check(Value(Path.Combine(destination, "first.xlsx")) == "1200" &&
             Value(Path.Combine(destination, nested)) == "1300" &&
             Value(Path.Combine(production, nested)) == "1200", "それぞれの解決結果を別フォルダに保存する");
-        check(File.Exists(Path.Combine(destination, "keep.xlsx")) && File.Exists(Path.Combine(destination, "broken.xlsx")) &&
-            !File.Exists(Path.Combine(destination, "new.xlsx")), "本番版のファイル構成を維持する");
-
         var pair = FolderMerger.AnalyzePair(production, incoming);
-        check(pair.Books.Count == 5 && pair.Books.All(book => book.BasePath is null) &&
-            pair.Books.Single(book => book.RelativePath == "keep.xlsx").Notice?.Contains("共通ベース") == false,
-            "2方向のフォルダ比較で共通ベースの欠落を通知しない");
         var pairOutput = Path.Combine(scratch, "pair-folder-output");
         pair.Save(pairOutput, choices);
         check(Value(Path.Combine(pairOutput, "first.xlsx")) == "1200" &&

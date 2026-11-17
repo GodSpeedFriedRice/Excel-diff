@@ -51,6 +51,7 @@ internal sealed class MergePreview : UserControl
             if (selecting) return;
             selection = pendingReveal = null;
             DrawSheet();
+            CellSelected?.Invoke(null);
         };
         commands.Controls.AddRange([sheets, pairs, status]);
         Appearance.Row(layout, commands);
@@ -80,6 +81,8 @@ internal sealed class MergePreview : UserControl
         Controls.Add(layout);
         SetColumns();
     }
+
+    internal event Action<MergeCellAddress?>? CellSelected;
 
     internal async void LoadPreview()
     {
@@ -145,7 +148,15 @@ internal sealed class MergePreview : UserControl
         sheets.SelectedItem = cell.Sheet;
         selecting = false;
         selection = cell;
+        details.Clear();
         DrawSheet(jump: true);
+        CellSelected?.Invoke(cell);
+    }
+
+    internal void ShowConflictValues(MergeCellChange change)
+    {
+        var baseline = useBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "";
+        details.Text = baseline + $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}";
     }
 
     private void SetColumns()
@@ -254,16 +265,31 @@ internal sealed class MergePreview : UserControl
 
     private void ShowPicked(int index, FullSheetPane.CellPick pick)
     {
+        if (sheets.SelectedItem is string sheet && pick.Row is int row && pick.Column is int column)
+        {
+            selection = new(sheet, row, column);
+            DrawSheet();
+        }
+        else
+        {
+            selection = null;
+            for (var i = 0; i < panes.Length; i++)
+                if (i != index) panes[i].ClearSelection();
+        }
+
         var differences = displayed[index].Items;
         if (pick.DifferenceIndices.Count > 0 && differences is not null)
         {
             details.Text = $"{Titles[index]}　{pick.Address}{Environment.NewLine}" +
                 string.Join(Environment.NewLine + Environment.NewLine, pick.DifferenceIndices
                     .Select(item => WorkbookView.DescribeDifference(differences[item])).Distinct());
-            return;
         }
-        var formula = pick.Formula is null ? "" : $"{Environment.NewLine}数式　={pick.Formula}";
-        details.Text = $"{Titles[index]}　{pick.Address}　{pick.Value}{formula}";
+        else
+        {
+            var formula = pick.Formula is null ? "" : $"{Environment.NewLine}数式　={pick.Formula}";
+            details.Text = $"{Titles[index]}　{pick.Address}　{pick.Value}{formula}";
+        }
+        CellSelected?.Invoke(selection);
     }
 
     private static Sheet? FindSheet(Workbook? book, string name) =>

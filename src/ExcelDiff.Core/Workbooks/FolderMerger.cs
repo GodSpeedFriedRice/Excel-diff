@@ -29,6 +29,8 @@ public sealed class FolderMergePlan
         var parent = Path.GetDirectoryName(output);
         if (parent is null || !Directory.Exists(parent))
             throw new DirectoryNotFoundException("保存先の親フォルダが見つかりません。");
+        if (Books.FirstOrDefault(book => book.Plan is not { RequiresManualResolution: false }) is { } blocked)
+            throw new InvalidOperationException($"{blocked.RelativePath} に手動で解消が必要な項目があります。修正してから再比較してください。");
 
         void VerifyFiles()
         {
@@ -48,17 +50,9 @@ public sealed class FolderMergePlan
             foreach (var book in Books)
             {
                 token.ThrowIfCancellationRequested();
-                if (book.ProductionPath is null) continue;
                 var dest = Path.Combine(staging, book.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                if (book.Plan is { } plan)
-                    plan.Save(dest, choices.GetValueOrDefault(book.RelativePath) ?? NoChoices, token);
-                else
-                {
-                    using var source = new FileStream(book.ProductionPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    using var target = new FileStream(dest, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    source.CopyToAsync(target, token).GetAwaiter().GetResult();
-                }
+                book.Plan!.Save(dest, choices.GetValueOrDefault(book.RelativePath) ?? NoChoices, token);
             }
             VerifyFiles();
             token.ThrowIfCancellationRequested();

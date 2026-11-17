@@ -240,8 +240,7 @@ internal sealed class MergeView : UserControl
             var total = book.Plan?.Changes.Count(change => change.Disposition == MergeDisposition.Conflict) ?? 0;
             conflicts.Add(book.RelativePath, total);
             unresolved += total;
-            if (book.Plan is null || book.Plan.Notices.Count > 0 ||
-                book.Plan.Changes.Any(change => change.Disposition == MergeDisposition.Unsupported))
+            if (book.Plan is not { RequiresManualResolution: false })
                 review.Add(book.RelativePath);
         }
         books = result.OrderByDescending(book => conflicts[book.RelativePath] > 0)
@@ -395,9 +394,9 @@ internal sealed class MergeView : UserControl
         changeInputs.Enabled = !busy;
         filter.Enabled = !busy && books.Count > 0;
         open.Enabled = preview.Enabled = !busy && Current is not null;
-        save.Enabled = !busy && unresolved == 0 && books.Any(book => book.ProductionPath is not null);
+        save.Enabled = !busy && unresolved == 0 && review.Count == 0 && books.Count > 0;
         notice.Text = Current is { } book ? book.Notice ??
-            (review.Contains(book.RelativePath) ? "手動で解消する項目は「詳細を開く」から確認できます。" : "") : "";
+            (review.Contains(book.RelativePath) ? "「詳細を開く」で項目を確認し、Excel で修正してから再比較してください。" : "") : "";
         notice.Visible = notice.Text.Length > 0;
     }
 
