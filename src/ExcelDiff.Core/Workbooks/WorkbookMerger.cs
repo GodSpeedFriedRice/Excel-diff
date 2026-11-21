@@ -14,7 +14,11 @@ public sealed record MergeCellAddress(string Sheet, int Row, int Column)
 }
 
 public sealed record MergeCellChange(MergeCellAddress Cell, string Base, string Production, string Incoming,
-    MergeDisposition Disposition, string? Reason = null);
+    MergeDisposition Disposition, string? Reason = null)
+{
+    internal bool AllowsChoice { get; init; } = true;
+    public bool CanChoose => Disposition != MergeDisposition.Unsupported && AllowsChoice;
+}
 
 public sealed record MergeNotice(string Sheet, string Reason);
 
@@ -67,18 +71,13 @@ public sealed class WorkbookMergePlan
         foreach (var edit in edits)
         {
             token.ThrowIfCancellationRequested();
-            switch (edit.Change.Disposition)
-            {
-                case MergeDisposition.TakeIncoming:
-                    writes.Add(edit);
-                    break;
-                case MergeDisposition.Conflict:
-                    if (!choices.TryGetValue(edit.Change.Cell, out var choice) ||
-                        choice is not (MergeChoice.Production or MergeChoice.Incoming))
-                        throw new InvalidOperationException("すべてのコンフリクトで採用する内容を選択してください。");
-                    if (choice == MergeChoice.Incoming) writes.Add(edit);
-                    break;
-            }
+            var hasChoice = choices.TryGetValue(edit.Change.Cell, out var choice);
+            if (hasChoice && (!edit.Change.CanChoose || choice is not (MergeChoice.Production or MergeChoice.Incoming)))
+                throw new InvalidOperationException("このセルでは採用する内容を変更できません。");
+            if (!hasChoice && edit.Change.Disposition == MergeDisposition.Conflict)
+                throw new InvalidOperationException("すべてのコンフリクトで採用する内容を選択してください。");
+            if (hasChoice ? choice == MergeChoice.Incoming : edit.Change.Disposition == MergeDisposition.TakeIncoming)
+                writes.Add(edit);
         }
 
         using var original = baseInput?.Open();
@@ -222,13 +221,14 @@ public static partial class WorkbookMerger
                     if (hasBase ? theirs.Key == before.Key && ours.Key == before.Key : theirs.Key == ours.Key) continue;
 
                     string? reason = null;
+                    var allowsChoice = !ours.Special && !theirs.Special &&
+                        !currentFormulaRanges.Any(range => range.ContainsColumn(column)) &&
+                        !incomingFormulaRanges.Any(range => range.ContainsColumn(column)) &&
+                        !(theirs.Key.Kind == "formula" && ExternalBookReference().IsMatch(theirs.Key.Text));
                     MergeDisposition disposition;
                     if (hasBase && theirs.Key == before.Key) disposition = MergeDisposition.KeepProduction;
                     else if (hasBase && theirs.Key == ours.Key) disposition = MergeDisposition.AlreadyMatches;
-                    else if (ours.Special || theirs.Special ||
-                        currentFormulaRanges.Any(range => range.ContainsColumn(column)) ||
-                        incomingFormulaRanges.Any(range => range.ContainsColumn(column)) ||
-                        (theirs.Key.Kind == "formula" && ExternalBookReference().IsMatch(theirs.Key.Text)))
+                    else if (!allowsChoice)
                     {
                         disposition = MergeDisposition.Unsupported;
                         reason = "セル内の文字装飾、特殊な数式、外部参照などを含みます。手動で解消してください。";
@@ -236,7 +236,7 @@ public static partial class WorkbookMerger
                     else disposition = hasBase && ours.Key == before.Key ? MergeDisposition.TakeIncoming : MergeDisposition.Conflict;
 
                     var change = new MergeCellChange(new(name, row, column), hasBase ? before.Display : "", ours.Display, theirs.Display,
-                        disposition, reason);
+                        disposition, reason) { AllowsChoice = allowsChoice };
                     edits.Add(new(change, destination.XmlPartPath!, theirs));
                 }
             }
@@ -245,17 +245,15 @@ public static partial class WorkbookMerger
             for (var index = 0; index < edits.Count; index++)
             {
                 var edit = edits[index];
-                if (edit.Incoming.Key.Kind == "formula" &&
-                    edit.Change.Disposition is MergeDisposition.TakeIncoming or MergeDisposition.Conflict &&
-                    edit.Incoming.Key.Text.Contains('!'))
-                    edits[index] = edit with
+                if (edit.Incoming.Key.Kind != "formula" || !edit.Incoming.Key.Text.Contains('!')) continue;
+                var change = edit.Change;
+                if (change.Disposition is MergeDisposition.TakeIncoming or MergeDisposition.Conflict)
+                    change = change with
                     {
-                        Change = edit.Change with
-                        {
-                            Disposition = MergeDisposition.Unsupported,
-                            Reason = "構造変更のあるブック内でシートを参照する数式です。手動で解消してください。"
-                        }
+                        Disposition = MergeDisposition.Unsupported,
+                        Reason = "構造変更のあるブック内でシートを参照する数式です。手動で解消してください。"
                     };
+                edits[index] = edit with { Change = change with { AllowsChoice = false } };
             }
         return Result();
     }

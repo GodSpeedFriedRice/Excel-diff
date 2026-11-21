@@ -112,6 +112,25 @@ internal static class MergeChecks
                 XDocument.Load(shared).Root!.Attribute("count") is null, "再計算を指定し、古い計算チェーンと共有文字列件数を無効にする");
         }
 
+        var overrides = new Dictionary<MergeCellAddress, MergeChoice>(choices)
+        {
+            [changes["A3"].Cell] = MergeChoice.Incoming,
+            [changes["C2"].Cell] = MergeChoice.Production,
+            [changes["E4"].Cell] = MergeChoice.Production,
+            [changes["A6"].Cell] = MergeChoice.Production,
+            [changes["F4"].Cell] = MergeChoice.Incoming
+        };
+        var overrideOutput = Path.Combine(directory, "manual-overrides.xlsx");
+        plan.Save(overrideOutput, overrides);
+        var overridden = XlsxReader.Read(overrideOutput).Sheets.Single();
+        check(overridden.At(3, 1)?.Value == "P-102" && overridden.At(2, 3)?.Formula == "1+1" &&
+            overridden.At(4, 5) is null && overridden.At(6, 1)?.Value == "88" && overridden.At(4, 6)?.Value == "7",
+            "自動採用先の変更を、文字列・数式・追加・削除・両側同じ変更の保存に反映する");
+        overrides.Remove(changes["F5"].Cell);
+        var unresolvedOutput = Path.Combine(directory, "overrides-with-unresolved.xlsx");
+        Expect<InvalidOperationException>(() => plan.Save(unresolvedOutput, overrides));
+        check(!File.Exists(unresolvedOutput), "自動判定の変更が複数あっても未解決コンフリクトの保存を拒否する");
+
         var pair = WorkbookMerger.AnalyzePair(production, incoming);
         var pairConflicts = pair.Changes.Where(change => change.Disposition == MergeDisposition.Conflict).ToArray();
         check(pairConflicts.Any(change => change.Cell.Address == "B2") &&
@@ -154,6 +173,19 @@ internal static class MergeChecks
             new Dictionary<MergeCellAddress, MergeChoice>()));
         var reconciled = WorkbookMerger.Analyze(original, merged, merged);
         check(!reconciled.RequiresManualResolution, "同じ構造の変更を取り込み両側で解消したブックは保存できる");
+
+        var richBase = Path.Combine(directory, "rich-base.xlsx");
+        var richIncoming = Path.Combine(directory, "rich-incoming.xlsx");
+        var richProduction = Path.Combine(directory, "rich-production.xlsx");
+        foreach (var file in new[] { richBase, richIncoming, richProduction }) File.Copy(template, file);
+        foreach (var file in new[] { richBase, richIncoming })
+            Change(file, "A1", """t="inlineStr"><is><r><rPr><b/></rPr><t>装飾あり</t></r></is></c>""");
+        var rich = WorkbookMerger.Analyze(richBase, richProduction, richIncoming);
+        var richChange = rich.Changes.Single();
+        check(richChange.Disposition == MergeDisposition.KeepProduction && !richChange.CanChoose,
+            "取り込み1の自動採用で保持していた特殊セルは未対応の書き戻しを許可しない");
+        Expect<InvalidOperationException>(() => rich.Save(Path.Combine(directory, "unsafe-override.xlsx"),
+            new Dictionary<MergeCellAddress, MergeChoice> { [richChange.Cell] = MergeChoice.Incoming }));
     }
 
     private static void EditPart(string path, string name, Action<XElement> change)

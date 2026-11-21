@@ -25,7 +25,7 @@ internal sealed class MergeView : UserControl
     private readonly TableLayoutPanel paths;
     private readonly string recentTargetsPath;
     private readonly Dictionary<string, Dictionary<MergeCellAddress, MergeChoice>> choices = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> conflicts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<MergeCellAddress>> conflicts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> review = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<FolderMergeBook> books = [];
     private FolderMergeBook[] visible = [];
@@ -146,8 +146,10 @@ internal sealed class MergeView : UserControl
 
     internal void Choose(FolderMergeBook book, MergeCellAddress cell, MergeChoice choice)
     {
-        if (busy || !choices.TryGetValue(book.RelativePath, out var selected)) return;
-        if (!selected.ContainsKey(cell)) unresolved--;
+        if (busy || !choices.TryGetValue(book.RelativePath, out var selected) ||
+            choice is not (MergeChoice.Production or MergeChoice.Incoming) ||
+            book.Plan?.Changes.FirstOrDefault(change => change.Cell == cell)?.CanChoose != true) return;
+        if (conflicts[book.RelativePath].Contains(cell) && !selected.ContainsKey(cell)) unresolved--;
         selected[cell] = choice;
         RenderFiles();
         UpdateSummary();
@@ -155,7 +157,11 @@ internal sealed class MergeView : UserControl
 
     private FolderMergeBook? Current => FileAt(fileList.CurrentCell?.RowIndex ?? -1);
     private FolderMergeBook? FileAt(int index) => index >= 0 && index < visible.Length ? visible[index] : null;
-    private int Pending(FolderMergeBook book) => conflicts[book.RelativePath] - (choices.GetValueOrDefault(book.RelativePath)?.Count ?? 0);
+    private int Pending(FolderMergeBook book)
+    {
+        var selected = choices.GetValueOrDefault(book.RelativePath);
+        return conflicts[book.RelativePath].Count(cell => selected?.ContainsKey(cell) != true);
+    }
 
     private void OpenCurrent(bool showPreview)
     {
@@ -237,13 +243,14 @@ internal sealed class MergeView : UserControl
     {
         foreach (var book in result)
         {
-            var total = book.Plan?.Changes.Count(change => change.Disposition == MergeDisposition.Conflict) ?? 0;
-            conflicts.Add(book.RelativePath, total);
-            unresolved += total;
+            var cells = book.Plan?.Changes.Where(change => change.Disposition == MergeDisposition.Conflict)
+                .Select(change => change.Cell).ToHashSet() ?? [];
+            conflicts.Add(book.RelativePath, cells);
+            unresolved += cells.Count;
             if (book.Plan is not { RequiresManualResolution: false })
                 review.Add(book.RelativePath);
         }
-        books = result.OrderByDescending(book => conflicts[book.RelativePath] > 0)
+        books = result.OrderByDescending(book => conflicts[book.RelativePath].Count > 0)
             .ThenByDescending(book => review.Contains(book.RelativePath)).ToArray();
         RenderFiles();
         UpdateSummary();
@@ -330,7 +337,7 @@ internal sealed class MergeView : UserControl
     {
         if (Pending(book) > 0) return FileState.Conflict;
         if (review.Contains(book.RelativePath)) return FileState.ManualReview;
-        if (conflicts[book.RelativePath] > 0) return FileState.Resolved;
+        if (conflicts[book.RelativePath].Count > 0) return FileState.Resolved;
         return book.Plan!.PartChanges.Count + book.Plan.PairParts.Count > 0 ? FileState.Different : FileState.Same;
     }
 

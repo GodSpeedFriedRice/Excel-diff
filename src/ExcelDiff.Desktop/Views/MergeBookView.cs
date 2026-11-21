@@ -24,9 +24,9 @@ internal sealed class MergeBookView : UserControl
     private readonly Button nextUnresolved;
     private MergeCellChange[] rows;
     private readonly IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices;
-    private readonly Dictionary<MergeCellAddress, MergeCellChange> conflictsByCell;
+    private readonly Dictionary<MergeCellAddress, MergeCellChange> changesByCell;
     private readonly MergeCellChange[] conflicts;
-    private MergeCellChange? previewConflict;
+    private MergeCellChange? previewChange;
     private readonly string notes;
     private bool locked;
 
@@ -39,7 +39,7 @@ internal sealed class MergeBookView : UserControl
         Dock = DockStyle.Fill;
         rows = book.Plan?.Changes.OrderByDescending(change => change.Disposition == MergeDisposition.Conflict).ToArray() ?? [];
         conflicts = rows.Where(row => row.Disposition == MergeDisposition.Conflict).ToArray();
-        conflictsByCell = conflicts.ToDictionary(change => change.Cell);
+        changesByCell = rows.ToDictionary(change => change.Cell);
         notes = book.Notice ?? string.Join(Environment.NewLine,
             book.Plan?.Notices.Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
         preview = new MergePreview(book, owner.UsesBase);
@@ -52,8 +52,8 @@ internal sealed class MergeBookView : UserControl
         actions.Controls.AddRange([useProduction, useIncoming, reveal, nextUnresolved, status]);
         preview.CellSelected += cell =>
         {
-            previewConflict = cell is null ? null : conflictsByCell.GetValueOrDefault(cell);
-            if (previewConflict is { } change) preview.ShowConflictValues(change);
+            previewChange = cell is null ? null : changesByCell.GetValueOrDefault(cell);
+            if (previewChange is { } change) preview.ShowChangeValues(change);
             UpdateActions();
         };
         Appearance.Row(layout, actions);
@@ -135,7 +135,7 @@ internal sealed class MergeBookView : UserControl
     internal FolderMergeBook Book { get; }
     private MergeCellChange? Current => grid.CurrentCell is { RowIndex: var index } && index >= 0 && index < rows.Length
         ? rows[index] : null;
-    private MergeCellChange? ChoiceTarget => views.SelectedTab == previewTab ? previewConflict :
+    private MergeCellChange? ChoiceTarget => views.SelectedTab == previewTab ? previewChange :
         views.SelectedTab == cellTab ? Current : null;
 
     internal void SetPreviewOptions(PreviewOptions options)
@@ -160,7 +160,7 @@ internal sealed class MergeBookView : UserControl
 
     private void Choose(MergeChoice choice)
     {
-        if (locked || ChoiceTarget is not { Disposition: MergeDisposition.Conflict } change) return;
+        if (locked || ChoiceTarget is not { CanChoose: true } change) return;
         Owner.Choose(Book, change.Cell, choice);
         if (sort.Column == 5) SortChanges();
         else
@@ -173,7 +173,7 @@ internal sealed class MergeBookView : UserControl
     private void MoveToUnresolved()
     {
         if (locked) return;
-        var current = Array.IndexOf(conflicts, previewConflict);
+        var current = Array.IndexOf(conflicts, previewChange);
         for (var offset = 1; offset <= conflicts.Length; offset++)
         {
             var change = conflicts[(current + offset) % conflicts.Length];
@@ -205,12 +205,12 @@ internal sealed class MergeBookView : UserControl
     private void UpdateActions()
     {
         var inPreview = views.SelectedTab == previewTab;
-        var unresolved = conflicts.Length - choices.Count;
-        useProduction.Enabled = useIncoming.Enabled = !locked && ChoiceTarget?.Disposition == MergeDisposition.Conflict;
+        var unresolved = conflicts.Count(change => !choices.ContainsKey(change.Cell));
+        useProduction.Enabled = useIncoming.Enabled = !locked && ChoiceTarget?.CanChoose == true;
         reveal.Visible = !inPreview;
         nextUnresolved.Visible = inPreview;
         nextUnresolved.Enabled = !locked && unresolved > 0;
-        var selected = inPreview && previewConflict is { } pick ? $"　{pick.Cell.Address}　{DecisionText(Decision(pick))}" : "";
+        var selected = inPreview && previewChange is { } pick ? $"　{pick.Cell.Address}　{DecisionText(Decision(pick))}" : "";
         status.Text = $"未解決のコンフリクト {unresolved} 件{selected}";
         var contents = Current is { } change ? change.Reason ??
             (Owner.UsesBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "") +
@@ -219,23 +219,25 @@ internal sealed class MergeBookView : UserControl
         details.Visible = details.Text.Length > 0;
     }
 
-    private enum DecisionState { Unresolved, Unsupported, TakeIncoming, AdoptedProduction, AdoptedIncoming, KeepProduction, AlreadyMatches }
+    private enum DecisionState { Unresolved, Unsupported, TakeIncoming, AdoptedProduction, AdoptedIncoming, KeepProduction }
 
-    private DecisionState Decision(MergeCellChange change) => change.Disposition switch
+    private DecisionState Decision(MergeCellChange change)
     {
-        MergeDisposition.KeepProduction => DecisionState.KeepProduction,
-        MergeDisposition.TakeIncoming => DecisionState.TakeIncoming,
-        MergeDisposition.AlreadyMatches => DecisionState.AlreadyMatches,
-        MergeDisposition.Unsupported => DecisionState.Unsupported,
-        _ => !choices.TryGetValue(change.Cell, out var choice) ? DecisionState.Unresolved :
-            choice == MergeChoice.Incoming ? DecisionState.AdoptedIncoming : DecisionState.AdoptedProduction
-    };
+        if (change.Disposition == MergeDisposition.Unsupported) return DecisionState.Unsupported;
+        if (choices.TryGetValue(change.Cell, out var choice))
+            return choice == MergeChoice.Incoming ? DecisionState.AdoptedIncoming : DecisionState.AdoptedProduction;
+        return change.Disposition switch
+        {
+            MergeDisposition.KeepProduction or MergeDisposition.AlreadyMatches => DecisionState.KeepProduction,
+            MergeDisposition.TakeIncoming => DecisionState.TakeIncoming,
+            _ => DecisionState.Unresolved
+        };
+    }
 
     private static string DecisionText(DecisionState state) => state switch
     {
-        DecisionState.KeepProduction => "取り込み1を保持",
-        DecisionState.TakeIncoming => "自動取り込み",
-        DecisionState.AlreadyMatches => "両側で同じ変更",
+        DecisionState.KeepProduction => "取り込み1を採用（自動）",
+        DecisionState.TakeIncoming => "取り込み2を採用（自動）",
         DecisionState.Unsupported => "コンフリクト（手動解消）",
         DecisionState.AdoptedIncoming => "取り込み2を採用",
         DecisionState.AdoptedProduction => "取り込み1を採用",

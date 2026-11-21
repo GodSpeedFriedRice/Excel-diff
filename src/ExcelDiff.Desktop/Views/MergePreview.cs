@@ -155,7 +155,7 @@ internal sealed class MergePreview : UserControl
         CellSelected?.Invoke(cell);
     }
 
-    internal void ShowConflictValues(MergeCellChange change)
+    internal void ShowChangeValues(MergeCellChange change)
     {
         var baseline = useBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "";
         details.Text = baseline + $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}";
