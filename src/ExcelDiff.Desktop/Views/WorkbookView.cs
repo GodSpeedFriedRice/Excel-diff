@@ -51,6 +51,7 @@ internal sealed class WorkbookView : UserControl
     internal string? SelectedSheet => Current?.Name;
     internal string Status => Current is SheetDiff sheet ? $"{sheet.Name}  ・  差分 {sheet.Differences.Count} 件" : "比較できるシートがありません";
     internal event EventHandler? StatusChanged;
+    internal event Action<SheetDiff?, Difference?>? DifferenceSelected;
     private SheetDiff? Current => sheetPicker.SelectedIndex is var index && index >= 0 && index < sheets.Count ? sheets[index] : null;
 
     internal WorkbookView(string leftPath, string rightPath, Workbook left, Workbook right, IReadOnlyList<SheetDiff> sheets)
@@ -225,6 +226,13 @@ internal sealed class WorkbookView : UserControl
         }
     }
 
+    internal void ShowDifferenceList()
+    {
+        views.SelectedTab = list;
+        if (differenceIndex < 0 && differences.RowCount > 0) SelectDifference(0);
+        else UpdateSelection();
+    }
+
 
     private static TableLayoutPanel Split(Control left, Control right)
     {
@@ -376,6 +384,7 @@ internal sealed class WorkbookView : UserControl
             return;
         }
         var opposite = nearby ? (before ? rightPreview : leftPreview) : (before ? rightFull : leftFull);
+        DifferenceSelected?.Invoke(sheet, null);
         opposite.ClearSelection();
         var side = before ? "左" : "右";
         var value = pick.Value.Length > 0 ? $"　{pick.Value}" : "";
@@ -387,12 +396,14 @@ internal sealed class WorkbookView : UserControl
     {
         if (views.SelectedTab == package)
         {
+            DifferenceSelected?.Invoke(null, null);
             packageDiff.LoadComparison();
             return;
         }
         var sheet = Current;
         if (views.SelectedTab == xml)
         {
+            DifferenceSelected?.Invoke(sheet, null);
             xmlDiff.ShowSheets(sheet?.Left, sheet?.Right);
             return;
         }
@@ -401,6 +412,7 @@ internal sealed class WorkbookView : UserControl
         var count = sheet?.Differences.Count ?? 0;
         var originalIndex = DifferenceAt(index);
         var diff = sheet is not null && originalIndex >= 0 ? sheet.Differences[originalIndex] : null;
+        DifferenceSelected?.Invoke(sheet, diff);
         position.Text = $"{(diff is null ? 0 : index + 1)} / {count}";
         detail.Text = diff is not null ? DescribeDifference(diff) : sheet is null
             ? "比較できるシートがありません。" : count == 0 ? "比較対象の項目に差分はありません。" :

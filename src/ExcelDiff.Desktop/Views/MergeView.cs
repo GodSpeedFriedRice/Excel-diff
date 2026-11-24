@@ -38,6 +38,7 @@ internal sealed class MergeView : UserControl
     internal event Action<MergeView, FolderMergeBook, bool>? OpenRequested;
     internal event Action<MergeView>? ResultsCleared;
     internal event Action<bool>? BusyChanged;
+    internal event Action? ProgressChanged;
 
     internal MergeView() : this(LocalSettings.PathFor("last-merge.json")) { }
 
@@ -137,6 +138,8 @@ internal sealed class MergeView : UserControl
 
     internal bool Busy => busy;
     internal bool UsesBase => useBase.Checked;
+    internal FolderComparisonProgress? ComparisonProgress { get; private set; }
+    internal string ActivityStatus => summary.Text;
 
     internal IReadOnlyDictionary<MergeCellAddress, MergeChoice> ChoicesFor(FolderMergeBook book)
     {
@@ -197,7 +200,20 @@ internal sealed class MergeView : UserControl
         var compareWithBase = UsesBase;
         var token = lifetime.Token;
         ResetPlan();
+        FolderComparisonProgress? progress = null;
+        ComparisonProgress = null;
         SetBusy(true, compareFolders ? "フォルダを比較しています…" : "ブックを比較しています…");
+        using var timer = new System.Windows.Forms.Timer { Interval = 100 };
+        void Report(FolderComparisonProgress value) => Volatile.Write(ref progress, value);
+        void RefreshProgress()
+        {
+            ComparisonProgress = Volatile.Read(ref progress);
+            if (ComparisonProgress is { } count)
+                summary.Text = $"解析中　{count.Completed:N0} / {count.Total:N0} ファイル";
+            ProgressChanged?.Invoke();
+        }
+        timer.Tick += (_, _) => RefreshProgress();
+        timer.Start();
         try
         {
             var original = compareWithBase ? Path.GetFullPath(ReadPath(basePath)) : null;
@@ -205,27 +221,26 @@ internal sealed class MergeView : UserControl
             var incoming = Path.GetFullPath(ReadPath(incomingPath));
             if (compareFolders)
             {
-                FolderComparisonProgress? progress = null;
-                using var timer = new System.Windows.Forms.Timer { Interval = 150 };
-                timer.Tick += (_, _) =>
-                {
-                    if (Volatile.Read(ref progress) is { } count)
-                        summary.Text = $"解析中　{count.Completed:N0} / {count.Total:N0} ファイル";
-                };
-                timer.Start();
-                void Report(FolderComparisonProgress value) => Volatile.Write(ref progress, value);
                 var result = await Task.Run(() => original is null
                     ? FolderMerger.AnalyzePair(production, incoming, token, Report)
                     : FolderMerger.Analyze(original, production, incoming, token, Report), token);
                 if (IsDisposed || token.IsCancellationRequested) return;
+                RefreshProgress();
                 folderPlan = result;
                 LoadBooks(result.Books);
             }
             else
             {
-                var result = await Task.Run(() => original is null ? WorkbookMerger.AnalyzePair(production, incoming, token) :
-                    WorkbookMerger.Analyze(original, production, incoming, token), token);
+                Report(new(0, 1));
+                var result = await Task.Run(() =>
+                {
+                    var plan = original is null ? WorkbookMerger.AnalyzePair(production, incoming, token) :
+                        WorkbookMerger.Analyze(original, production, incoming, token);
+                    Report(new(1, 1));
+                    return plan;
+                }, token);
                 if (IsDisposed || token.IsCancellationRequested) return;
+                RefreshProgress();
                 LoadBooks([new(Path.GetFileName(production), original, production, incoming, result, null)]);
             }
             LocalSettings.Save(recentTargetsPath, new MergeTargets(original ?? ReadPath(basePath), production, incoming,
@@ -234,7 +249,12 @@ internal sealed class MergeView : UserControl
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) when (FolderComparer.IsReadError(error)) { if (!IsDisposed) summary.Text = error.Message; }
-        finally { if (!IsDisposed) SetBusy(false); }
+        finally
+        {
+            timer.Stop();
+            ComparisonProgress = null;
+            if (!IsDisposed) SetBusy(false);
+        }
     }
 
     private sealed record MergeTargets(string? Base, string Production, string Incoming, bool Folders, bool UseBase = true);

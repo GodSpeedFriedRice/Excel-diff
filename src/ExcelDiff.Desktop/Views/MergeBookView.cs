@@ -1,3 +1,4 @@
+using ExcelDiff.Core.Comparison;
 using ExcelDiff.Core.Workbooks;
 
 namespace ExcelDiff.Desktop.Views;
@@ -8,6 +9,7 @@ internal sealed class MergeBookView : UserControl
     private readonly WheelZoom zoom = new();
     private readonly GridSort sort;
     private readonly TabControl views = new() { Dock = DockStyle.Fill };
+    private readonly TabPage sheetTab = new("シート差分");
     private readonly TabPage cellTab = new("差分・コンフリクト");
     private readonly TabPage previewTab = new("全体プレビュー");
     private readonly Label status = Appearance.Label("");
@@ -18,6 +20,7 @@ internal sealed class MergeBookView : UserControl
     };
     private readonly PackageDiffView? package;
     private readonly MergePreview preview;
+    private readonly MergeComparisonView comparison;
     private readonly Button useProduction;
     private readonly Button useIncoming;
     private readonly Button reveal;
@@ -28,6 +31,9 @@ internal sealed class MergeBookView : UserControl
     private readonly (MergeRange Range, MergeCellChange Change)[] mergeChanges;
     private readonly MergeCellChange[] conflicts;
     private MergeCellChange? previewChange;
+    private MergeCellChange? comparisonChange;
+    private SheetDiff? comparisonSheet;
+    private Difference? comparisonDifference;
     private readonly string notes;
     private bool locked;
 
@@ -45,20 +51,28 @@ internal sealed class MergeBookView : UserControl
         notes = book.Notice ?? string.Join(Environment.NewLine,
             book.Plan?.Notices.Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
         preview = new MergePreview(book, owner.UsesBase);
+        comparison = new MergeComparisonView(book, owner.UsesBase);
         var layout = Appearance.Stack();
         var actions = Appearance.Toolbar();
         useProduction = Appearance.Button("取り込み1を採用", () => Choose(MergeChoice.Production));
         useIncoming = Appearance.Button("取り込み2を採用", () => Choose(MergeChoice.Incoming));
-        reveal = Appearance.Button("プレビューで表示", () => OpenPreview(Current));
+        reveal = Appearance.Button("プレビューで表示", () => OpenPreview(ChoiceTarget));
         nextUnresolved = Appearance.Button("次の未解決へ", MoveToUnresolved);
         actions.Controls.AddRange([useProduction, useIncoming, reveal, nextUnresolved, status]);
         preview.CellSelected += cell =>
         {
-            previewChange = cell is null ? null : changesByCell.GetValueOrDefault(cell);
-            if (cell is not null && previewChange is null)
-                previewChange = mergeChanges.FirstOrDefault(item => item.Change.Cell.Sheet == cell.Sheet &&
-                    item.Range.FirstRow <= cell.Row && item.Range.LastRow >= cell.Row && item.Range.ContainsColumn(cell.Column)).Change;
+            previewChange = FindChange(cell);
             if (previewChange is { } change) preview.ShowChangeValues(change);
+            UpdateActions();
+        };
+        comparison.DifferenceSelected += (sheet, difference, cell) =>
+        {
+            comparisonSheet = sheet;
+            comparisonDifference = difference;
+            var canAdopt = difference?.Kind is ChangeKind.Value or ChangeKind.Formula or ChangeKind.Added or ChangeKind.Removed ||
+                difference is { Kind: ChangeKind.Merge, Parts: { } parts } &&
+                parts.Any(part => part.Item is "値" or "数式" or "結合範囲");
+            comparisonChange = canAdopt ? FindChange(cell) : null;
             UpdateActions();
         };
         Appearance.Row(layout, actions);
@@ -117,8 +131,9 @@ internal sealed class MergeBookView : UserControl
         Appearance.Row(cells, details);
         Appearance.Row(cells, new ZoomBar(zoom));
         cellTab.Controls.Add(cells);
+        sheetTab.Controls.Add(comparison);
         previewTab.Controls.Add(preview);
-        views.TabPages.AddRange([cellTab, previewTab]);
+        views.TabPages.AddRange([sheetTab, cellTab, previewTab]);
         if (book.Plan is { } plan)
         {
             package = owner.UsesBase ? new PackageDiffView() : new PackageDiffView(book.ProductionPath, book.IncomingPath);
@@ -128,10 +143,11 @@ internal sealed class MergeBookView : UserControl
             if (owner.UsesBase) package.SetMerge(plan.PartChanges, book.BasePath!, book.ProductionPath!, book.IncomingPath!);
             else package.SetComparison(plan.PairParts, "取り込み1", "取り込み2");
         }
-        views.SelectedTab = cellTab;
+        views.SelectedTab = sheetTab;
         views.SelectedIndexChanged += (_, _) =>
         {
             if (views.SelectedTab == previewTab) preview.LoadPreview();
+            if (views.SelectedTab == sheetTab) comparison.LoadComparison();
             UpdateActions();
         };
         Appearance.Row(layout, views, fill: true);
@@ -139,7 +155,13 @@ internal sealed class MergeBookView : UserControl
         SetPreviewOptions(options);
         grid.RowCount = rows.Length;
         if (grid.RowCount > 0) grid.CurrentCell = grid.Rows[0].Cells[0];
-        VisibleChanged += (_, _) => { if (Visible) UpdateActions(); };
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible) return;
+            if (views.SelectedTab == sheetTab) comparison.LoadComparison();
+            UpdateActions();
+        };
+        HandleCreated += (_, _) => { if (views.SelectedTab == sheetTab) comparison.LoadComparison(); };
         UpdateActions();
     }
 
@@ -148,11 +170,20 @@ internal sealed class MergeBookView : UserControl
     private MergeCellChange? Current => grid.CurrentCell is { RowIndex: var index } && index >= 0 && index < rows.Length
         ? rows[index] : null;
     private MergeCellChange? ChoiceTarget => views.SelectedTab == previewTab ? previewChange :
-        views.SelectedTab == cellTab ? Current : null;
+        views.SelectedTab == cellTab ? Current : views.SelectedTab == sheetTab ? comparisonChange : null;
+
+    private MergeCellChange? FindChange(MergeCellAddress? cell)
+    {
+        if (cell is null) return null;
+        return changesByCell.GetValueOrDefault(cell) ?? mergeChanges.FirstOrDefault(item =>
+            string.Equals(item.Change.Cell.Sheet, cell.Sheet, StringComparison.OrdinalIgnoreCase) &&
+            item.Range.FirstRow <= cell.Row && item.Range.LastRow >= cell.Row && item.Range.ContainsColumn(cell.Column)).Change;
+    }
 
     internal void SetPreviewOptions(PreviewOptions options)
     {
         preview.SetOptions(options);
+        comparison.SetOptions(options);
         package?.SetThreeWay(options.ShowThreeWay);
     }
 
@@ -222,14 +253,31 @@ internal sealed class MergeBookView : UserControl
         reveal.Visible = !inPreview;
         nextUnresolved.Visible = inPreview;
         nextUnresolved.Enabled = !locked && unresolved > 0;
-        var selected = inPreview && previewChange is { } pick ? $"　{pick.Address}　{DecisionText(Decision(pick))}" : "";
+        var selected = ChoiceTarget is { } pick ? $"　{pick.Address}　{DecisionText(Decision(pick))}" : "";
         status.Text = $"未解決のコンフリクト {unresolved} 件{selected}";
+        reveal.Enabled = !locked && ChoiceTarget is not null;
+        comparison.ShowMergeInfo(ComparisonInfo());
         var contents = Current is { } change ?
             (change.Reason is null ? "" : change.Reason + Environment.NewLine) +
             (Owner.UsesBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "") +
             $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";
         details.Text = string.Join(Environment.NewLine, new[] { notes, contents }.Where(text => text.Length > 0));
         details.Visible = details.Text.Length > 0;
+    }
+
+    private string ComparisonInfo()
+    {
+        var notices = Book.Notice ?? string.Join(Environment.NewLine, Book.Plan?.Notices
+            .Where(note => comparisonSheet is null || note.Sheet == "ブック" ||
+                string.Equals(note.Sheet, comparisonSheet.Name, StringComparison.OrdinalIgnoreCase))
+            .Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
+        var decision = comparisonChange is { } change
+            ? $"{DecisionText(Decision(change))}　{change.Reason}" : "";
+        if (comparisonChange is null && comparisonDifference is not null && notices.Length == 0)
+            decision = comparisonDifference.Kind is ChangeKind.Added or ChangeKind.Removed
+                ? "行・シート単位の差分です。セルごとの採用状態は「差分・コンフリクト」で確認できます。"
+                : "この差分は取り込み1の内容を引き継ぎます。書式・行高・列幅や行・列の移動なども表示しています。";
+        return string.Join(Environment.NewLine, new[] { notices, decision }.Where(text => !string.IsNullOrWhiteSpace(text)));
     }
 
     private enum DecisionState { Unresolved, Unsupported, TakeIncoming, AdoptedProduction, AdoptedIncoming, KeepProduction }

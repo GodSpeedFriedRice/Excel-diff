@@ -33,6 +33,8 @@ internal sealed class CompareWindow : Form
     private readonly GridSort fileSort;
     private int visibleFileCount;
     private bool busy;
+    private bool hasFolderProgress;
+    private FolderComparisonProgress? comparisonProgress;
 
     internal CompareWindow() : this(LocalSettings.PathFor("preview-settings.json"), RecentTargets.SettingsPath) { }
 
@@ -338,6 +340,8 @@ internal sealed class CompareWindow : Form
         operationTab = owner;
         operationCancellation = request;
         busy = true;
+        hasFolderProgress = folderProgress is not null;
+        comparisonProgress = null;
         UseWaitCursor = true;
         showSheets.Enabled = false;
         status.Text = "比較しています…";
@@ -347,7 +351,11 @@ internal sealed class CompareWindow : Form
             status.Text = "比較対象ファイルを確認しています…";
             progressBar.Style = ProgressBarStyle.Marquee;
             progressBar.Visible = true;
-            progressTimer.Tick += (_, _) => ShowProgress(folderProgress!());
+            progressTimer.Tick += (_, _) =>
+            {
+                comparisonProgress = folderProgress!();
+                UpdateStatus();
+            };
             progressTimer.Start();
         }
         try
@@ -370,6 +378,8 @@ internal sealed class CompareWindow : Form
             operationTab = null;
             operationCancellation = null;
             busy = false;
+            hasFolderProgress = false;
+            comparisonProgress = null;
             if (!IsDisposed)
             {
                 progressBar.Visible = false;
@@ -379,9 +389,15 @@ internal sealed class CompareWindow : Form
         }
     }
 
-    private void ShowProgress(FolderComparisonProgress? progress)
+    private void ShowProgress(FolderComparisonProgress? progress, string waiting = "比較対象ファイルを確認しています…")
     {
-        if (progress is null) return;
+        progressBar.Visible = true;
+        if (progress is null)
+        {
+            progressBar.Style = ProgressBarStyle.Marquee;
+            status.Text = waiting;
+            return;
+        }
         var percent = progress.Total == 0 ? 0 : (int)(100L * progress.Completed / progress.Total);
         progressBar.Style = ProgressBarStyle.Continuous;
         progressBar.Value = percent;
@@ -506,6 +522,8 @@ internal sealed class CompareWindow : Form
             var merge = new MergeView();
             merge.OpenRequested += OpenMergeBook;
             merge.ResultsCleared += CloseMergeBooks;
+            merge.BusyChanged += _ => UpdateStatus();
+            merge.ProgressChanged += UpdateStatus;
             page = new TabPage("マージ比較") { Tag = merge };
             page.Controls.Add(merge);
             tabs.TabPages.Add(page);
@@ -574,7 +592,28 @@ internal sealed class CompareWindow : Form
         find.Enabled = tabs.TabPages.Contains(folderTab);
         showSame.Enabled = folder;
         showSheets.Enabled = folder && !busy;
-        if (busy) return;
+        var merge = tabs.SelectedTab?.Tag switch
+        {
+            MergeView selected => selected,
+            MergeBookView selected => selected.Owner,
+            _ => null
+        };
+        if (merge is { Busy: true })
+        {
+            ShowProgress(merge.ComparisonProgress, merge.ActivityStatus);
+            return;
+        }
+        if (busy)
+        {
+            if (hasFolderProgress) ShowProgress(comparisonProgress);
+            else
+            {
+                progressBar.Visible = false;
+                status.Text = "比較しています…";
+            }
+            return;
+        }
+        progressBar.Visible = false;
         Text = tabs.SelectedTab?.Tag switch
         {
             WorkbookView => "ファイル比較 — Excel Diff",
