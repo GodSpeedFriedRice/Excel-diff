@@ -16,7 +16,28 @@ internal static class XlsxMergeWriter
             var ns = root.Name.Namespace;
             var data = root.Element(ns + "sheetData") ?? throw new InvalidDataException("シートのセル領域が見つかりません。");
             var rows = MergeWorksheet.RowNodes(root).ToDictionary(item => item.Index, item => item.Node);
-            foreach (var rowChanges in sheet.GroupBy(edit => edit.Change.Cell.Row))
+            var contents = new Dictionary<(int Row, int Column), MergeContent>();
+            foreach (var edit in sheet)
+            {
+                token.ThrowIfCancellationRequested();
+                if (edit.Layout is not { } layout)
+                {
+                    contents[(edit.Change.Cell.Row, edit.Change.Cell.Column)] = edit.Incoming;
+                    continue;
+                }
+                foreach (var (rowNumber, row) in rows)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var ranges = layout.Scope.InRows(rowNumber, rowNumber);
+                    if (ranges.Count == 0) continue;
+                    foreach (var (column, _) in MergeWorksheet.CellNodes(row))
+                        if (ranges.Any(range => range.ContainsColumn(column)))
+                            contents[(rowNumber, column)] = MergeContent.Blank;
+                }
+                foreach (var cell in layout.IncomingCells) contents[cell.Key] = cell.Value;
+                SetMerges(root, layout);
+            }
+            foreach (var rowChanges in contents.GroupBy(cell => cell.Key.Row))
             {
                 token.ThrowIfCancellationRequested();
                 if (!rows.TryGetValue(rowChanges.Key, out var row))
@@ -26,17 +47,16 @@ internal static class XlsxMergeWriter
                 }
 
                 var cells = MergeWorksheet.CellNodes(row).ToDictionary(item => item.Index, item => item.Node);
-                foreach (var edit in rowChanges)
+                foreach (var (address, content) in rowChanges)
                 {
-                    var address = edit.Change.Cell;
                     if (!cells.TryGetValue(address.Column, out var cell))
                     {
-                        cell = new XElement(ns + "c", new XAttribute("r", address.Address));
+                        cell = new XElement(ns + "c", new XAttribute("r", Address.Format(address.Row, address.Column)));
                         cells.Add(address.Column, cell);
-                        ExpandDimension(root, address);
+                        ExpandDimension(root, new("", address.Row, address.Column));
                     }
                     replacedSharedString |= (string?)cell.Attribute("t") == "s";
-                    SetContent(cell, edit.Incoming);
+                    SetContent(cell, content);
                 }
                 if (cells.Values.Any(cell => cell.Parent is null))
                 {
@@ -57,6 +77,36 @@ internal static class XlsxMergeWriter
             Replace(zip, sheet.Key, part);
         }
         UpdateBook(zip, replacedSharedString);
+    }
+
+    private static void SetMerges(XElement root, WorkbookMergePlan.LayoutEdit layout)
+    {
+        var ns = root.Name.Namespace;
+        var merges = root.Element(ns + "mergeCells");
+        if (merges is null)
+        {
+            if (layout.IncomingMerges.Count == 0) return;
+            merges = new XElement(ns + "mergeCells");
+            var previous = root.Elements().Last(element => element.Name.Namespace == ns && element.Name.LocalName is
+                "sheetPr" or "dimension" or "sheetViews" or "sheetFormatPr" or "cols" or "sheetData" or
+                "sheetCalcPr" or "sheetProtection" or "protectedRanges" or "scenarios" or "autoFilter" or
+                "sortState" or "dataConsolidate" or "customSheetViews");
+            previous.AddAfterSelf(merges);
+        }
+        merges.Elements(ns + "mergeCell").Where(element =>
+        {
+            var range = MergeRange.Parse((string)element.Attribute("ref")!);
+            return layout.Scope.InRows(range.FirstRow, range.LastRow).Any(other =>
+                range.FirstColumn <= other.LastColumn && other.FirstColumn <= range.LastColumn);
+        }).Remove();
+        foreach (var range in layout.IncomingMerges)
+        {
+            merges.Add(new XElement(ns + "mergeCell", new XAttribute("ref", range.ToString())));
+            ExpandDimension(root, new("", range.LastRow, range.LastColumn));
+        }
+        var count = merges.Elements(ns + "mergeCell").Count();
+        if (count == 0) merges.Remove();
+        else merges.SetAttributeValue("count", count);
     }
 
     private static void SetContent(XElement cell, MergeContent content)

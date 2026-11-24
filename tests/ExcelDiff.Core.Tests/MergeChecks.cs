@@ -168,9 +168,12 @@ internal static class MergeChecks
         EditPart(merged, "xl/worksheets/sheet1.xml", root =>
             root.Element(ns + "mergeCells")!.Element(ns + "mergeCell")!.SetAttributeValue("ref", "D1:E1"));
         var geometry = WorkbookMerger.Analyze(original, production, merged);
-        check(geometry.Changes.Count == 0 && geometry.Notices.Single().Reason.Contains("結合範囲"), "結合範囲の変更を通知する");
-        Expect<InvalidOperationException>(() => geometry.Save(Path.Combine(directory, "blocked-geometry.xlsx"),
-            new Dictionary<MergeCellAddress, MergeChoice>()));
+        check(geometry.Notices.Count == 0 && geometry.Changes.Single(change => change.MergeRanges.Count > 0)
+            .Disposition == MergeDisposition.TakeIncoming, "片側だけの結合範囲の変更を自動採用する");
+        var geometryOutput = Path.Combine(directory, "merged-geometry.xlsx");
+        geometry.Save(geometryOutput, new Dictionary<MergeCellAddress, MergeChoice>());
+        check(XlsxReader.Read(geometryOutput).Sheets.Single().Merges.Ranges.Single().ToString() == "D1:E1",
+            "結合範囲の変更をセル変更と一緒に保存する");
         var reconciled = WorkbookMerger.Analyze(original, merged, merged);
         check(!reconciled.RequiresManualResolution, "同じ構造の変更を取り込み両側で解消したブックは保存できる");
 

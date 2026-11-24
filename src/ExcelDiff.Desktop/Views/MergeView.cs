@@ -76,7 +76,7 @@ internal sealed class MergeView : UserControl
         fileList.VirtualMode = true;
         fileList.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         fileList.AccessibleName = "マージ比較のファイル一覧";
-        foreach (var (title, weight) in new[] { ("ファイル名", 29), ("フォルダ", 23), ("状態", 31), ("未解決セル", 17) })
+        foreach (var (title, weight) in new[] { ("ファイル名", 29), ("フォルダ", 23), ("状態", 31), ("未解決項目", 17) })
             fileList.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = title, FillWeight = weight, MinimumWidth = title == "状態" ? 190 : 65,
@@ -329,7 +329,7 @@ internal sealed class MergeView : UserControl
     }
 
     private void UpdateSummary() =>
-        summary.Text = $"{books.Count} ファイル　未解決のコンフリクト {unresolved} セル　手動解消 {review.Count} ファイル";
+        summary.Text = $"{books.Count} ファイル　未解決のコンフリクト {unresolved} 件　手動解消 {review.Count} ファイル";
 
     private enum FileState { Conflict, ManualReview, Resolved, Different, Same }
 

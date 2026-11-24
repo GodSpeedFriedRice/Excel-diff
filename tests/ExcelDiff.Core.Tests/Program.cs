@@ -35,6 +35,7 @@ try
     CheckXmlDiff();
     CheckThreeWayXml();
     MergeChecks.Run(scratch.FullName, a, Check);
+    MergeLayoutChecks.Run(scratch.FullName, a, Check);
     DrawingChecks.Run(scratch.FullName, a, Check);
     PrintChecks.Run(scratch.FullName, a, Check);
     FolderMergeChecks.Run(scratch.FullName, a, Check);

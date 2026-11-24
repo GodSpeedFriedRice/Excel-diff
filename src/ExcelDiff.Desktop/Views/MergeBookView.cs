@@ -25,6 +25,7 @@ internal sealed class MergeBookView : UserControl
     private MergeCellChange[] rows;
     private readonly IReadOnlyDictionary<MergeCellAddress, MergeChoice> choices;
     private readonly Dictionary<MergeCellAddress, MergeCellChange> changesByCell;
+    private readonly (MergeRange Range, MergeCellChange Change)[] mergeChanges;
     private readonly MergeCellChange[] conflicts;
     private MergeCellChange? previewChange;
     private readonly string notes;
@@ -40,6 +41,7 @@ internal sealed class MergeBookView : UserControl
         rows = book.Plan?.Changes.OrderByDescending(change => change.Disposition == MergeDisposition.Conflict).ToArray() ?? [];
         conflicts = rows.Where(row => row.Disposition == MergeDisposition.Conflict).ToArray();
         changesByCell = rows.ToDictionary(change => change.Cell);
+        mergeChanges = rows.SelectMany(change => change.MergeRanges.Select(range => (range, change))).ToArray();
         notes = book.Notice ?? string.Join(Environment.NewLine,
             book.Plan?.Notices.Select(note => $"{note.Sheet}　{note.Reason}") ?? []);
         preview = new MergePreview(book, owner.UsesBase);
@@ -53,6 +55,9 @@ internal sealed class MergeBookView : UserControl
         preview.CellSelected += cell =>
         {
             previewChange = cell is null ? null : changesByCell.GetValueOrDefault(cell);
+            if (cell is not null && previewChange is null)
+                previewChange = mergeChanges.FirstOrDefault(item => item.Change.Cell.Sheet == cell.Sheet &&
+                    item.Range.FirstRow <= cell.Row && item.Range.LastRow >= cell.Row && item.Range.ContainsColumn(cell.Column)).Change;
             if (previewChange is { } change) preview.ShowChangeValues(change);
             UpdateActions();
         };
@@ -63,10 +68,10 @@ internal sealed class MergeBookView : UserControl
         grid.AccessibleName = "ブックのセル差分とコンフリクト";
         grid.ZoomRequested += zoom.Apply;
         zoom.Changed += () => grid.SetZoom(zoom.Scale);
-        foreach (var (title, weight) in new[] { ("シート", 15), ("セル", 7), ("共通ベース", 18),
+        foreach (var (title, weight) in new[] { ("シート", 15), ("セル・結合範囲", 13), ("共通ベース", 18),
                      ("取り込み1", 18), ("取り込み2", 18), ("処理", 24) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight,
-                MinimumWidth = weight == 7 ? 46 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+                MinimumWidth = title == "セル・結合範囲" ? 110 : 64, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
         grid.Columns[2].Visible = owner.UsesBase;
         sort = new GridSort(grid, SortChanges);
         grid.CellValueNeeded += (_, e) =>
@@ -75,9 +80,16 @@ internal sealed class MergeBookView : UserControl
             var change = rows[e.RowIndex];
             e.Value = e.ColumnIndex switch
             {
-                0 => change.Cell.Sheet, 1 => change.Cell.Address, 2 => change.Base, 3 => change.Production, 4 => change.Incoming,
+                0 => change.Cell.Sheet, 1 => change.Address, 2 => change.Base, 3 => change.Production, 4 => change.Incoming,
                 _ => DecisionText(Decision(change))
             };
+        };
+        grid.CellToolTipTextNeeded += (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= rows.Length) return;
+            var change = rows[e.RowIndex];
+            e.ToolTipText = e.ColumnIndex == 1 ? change.Address :
+                $"共通ベース　{change.Base}{Environment.NewLine}取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}";
         };
         grid.CellDoubleClick += (_, e) =>
         {
@@ -210,9 +222,10 @@ internal sealed class MergeBookView : UserControl
         reveal.Visible = !inPreview;
         nextUnresolved.Visible = inPreview;
         nextUnresolved.Enabled = !locked && unresolved > 0;
-        var selected = inPreview && previewChange is { } pick ? $"　{pick.Cell.Address}　{DecisionText(Decision(pick))}" : "";
+        var selected = inPreview && previewChange is { } pick ? $"　{pick.Address}　{DecisionText(Decision(pick))}" : "";
         status.Text = $"未解決のコンフリクト {unresolved} 件{selected}";
-        var contents = Current is { } change ? change.Reason ??
+        var contents = Current is { } change ?
+            (change.Reason is null ? "" : change.Reason + Environment.NewLine) +
             (Owner.UsesBase ? $"共通ベース　{change.Base}{Environment.NewLine}" : "") +
             $"取り込み1　{change.Production}{Environment.NewLine}取り込み2　{change.Incoming}" : "";
         details.Text = string.Join(Environment.NewLine, new[] { notes, contents }.Where(text => text.Length > 0));

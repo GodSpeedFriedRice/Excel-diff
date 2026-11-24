@@ -18,6 +18,8 @@ public sealed record MergeCellChange(MergeCellAddress Cell, string Base, string 
 {
     internal bool AllowsChoice { get; init; } = true;
     public bool CanChoose => Disposition != MergeDisposition.Unsupported && AllowsChoice;
+    public IReadOnlyList<MergeRange> MergeRanges { get; init; } = [];
+    public string Address => MergeRanges.Count == 0 ? Cell.Address : string.Join(" / ", MergeRanges);
 }
 
 public sealed record MergeNotice(string Sheet, string Reason);
@@ -110,7 +112,13 @@ public sealed class WorkbookMergePlan
         }
     }
 
-    internal sealed record Edit(MergeCellChange Change, string Part, MergeContent Incoming);
+    internal sealed record Edit(MergeCellChange Change, string Part, MergeContent Incoming)
+    {
+        internal LayoutEdit? Layout { get; init; }
+    }
+
+    internal sealed record LayoutEdit(MergeIndex Scope, IReadOnlyList<MergeRange> IncomingMerges,
+        IReadOnlyDictionary<(int Row, int Column), MergeContent> IncomingCells);
     internal sealed record Input(string Path, string Label, byte[] Hash)
     {
         internal FileStream Open() => new(Path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -186,13 +194,6 @@ public static partial class WorkbookMerger
                     notices.Add(new(name, "両側に同名のシートが追加されています。手動で確認してください。"));
                 continue;
             }
-            if (!destination.Merges.Ranges.SequenceEqual(source.Merges.Ranges) ||
-                (original is not null && !original.Merges.Ranges.SequenceEqual(destination.Merges.Ranges)))
-            {
-                notices.Add(new(name, "結合範囲が変わったシートです。手動で確認してください。"));
-                continue;
-            }
-
             var baseline = original is null ? null : new MergeWorksheet(original, token);
             var current = new MergeWorksheet(destination, token);
             var other = new MergeWorksheet(source, token);
@@ -203,6 +204,8 @@ public static partial class WorkbookMerger
                 continue;
             }
 
+            var mergeScope = AddMergeEdits(original, destination, source, baseline, current, other, edits, token);
+
             foreach (var row in (baseline?.Rows.Keys.AsEnumerable() ?? []).Union(current.Rows.Keys).Union(other.Rows.Keys).Order())
             {
                 token.ThrowIfCancellationRequested();
@@ -210,10 +213,12 @@ public static partial class WorkbookMerger
                 var currentRow = current.Rows.GetValueOrDefault(row);
                 var incomingRow = other.Rows.GetValueOrDefault(row);
                 var merges = destination.Merges.InRows(row, row);
+                var changedMerges = mergeScope.InRows(row, row);
                 var currentFormulaRanges = current.FormulaRanges.InRows(row, row);
                 var incomingFormulaRanges = other.FormulaRanges.InRows(row, row);
                 foreach (var column in Columns(originalRow).Union(Columns(currentRow)).Union(Columns(incomingRow)).Order())
                 {
+                    if (changedMerges.Any(range => range.ContainsColumn(column))) continue;
                     if (merges.Any(range => range.ContainsColumn(column) && !range.IsAnchor(row, column))) continue;
                     var before = originalRow?.GetValueOrDefault(column) ?? MergeContent.Blank;
                     var ours = currentRow?.GetValueOrDefault(column) ?? MergeContent.Blank;
@@ -245,7 +250,10 @@ public static partial class WorkbookMerger
             for (var index = 0; index < edits.Count; index++)
             {
                 var edit = edits[index];
-                if (edit.Incoming.Key.Kind != "formula" || !edit.Incoming.Key.Text.Contains('!')) continue;
+                var referencesSheet = edit.Layout is { } layout
+                    ? layout.IncomingCells.Values.Any(cell => cell.Key.Kind == "formula" && cell.Key.Text.Contains('!'))
+                    : edit.Incoming.Key.Kind == "formula" && edit.Incoming.Key.Text.Contains('!');
+                if (!referencesSheet) continue;
                 var change = edit.Change;
                 if (change.Disposition is MergeDisposition.TakeIncoming or MergeDisposition.Conflict)
                     change = change with
